@@ -73,8 +73,16 @@ class CloudFUSE(fuse.Operations):
 
     def read(self, path, size, offset, fh):
         local_path = self._get_cache_path(path)
-        if not os.path.exists(local_path):
-            logger.info(f"CACHE MISS: Downloading {path} to disk cache...")
+        attrs = self.getattr(path)
+        remote_size = attrs['st_size']
+        needs_download = not os.path.exists(local_path)
+        if not needs_download:
+            local_size = os.path.getsize(local_path)
+            if local_size != remote_size and path not in self.dirty_files:
+                logger.info(f"CACHE INVALID: {path} changed in cloud (local: {local_size}, remote: {remote_size})")
+                needs_download = True
+        if needs_download:
+            logger.info(f"DOWNLOADING: {path} to disk cache...")
             try:
                 data = self.adapter.read_file(path)
                 os.makedirs(os.path.dirname(local_path), exist_ok=True)
