@@ -1,6 +1,8 @@
 import logging
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger("Adapter")
 
@@ -15,18 +17,26 @@ class YandexAdapter:
     ):
         self.token = token
         self.base_url = base_url.rstrip("/")
+        self.headers = {"Authorization": f"OAuth {self.token}"}
+        self.resource_url = f"{self.base_url}/resources"
+        self.download_url = f"{self.resource_url}/download"
+        self.upload_url = f"{self.resource_url}/upload"
+        self.move_url = f"{self.resource_url}/move"
+        self.default_timeout = (3, 10)
+        self.transfer_timeout = (3, 30)
+        self.session = self._build_session()
 
     def listdir(self, path: str) -> list[dict]:
         logger.info("Fetching directory listing for %s", path)
 
         response = requests.get(
-            self._resource_url(),
-            headers=self._headers(),
+            self.resource_url,
+            headers=self.headers,
             params={
                 "path": self._disk_path(path),
                 "limit": 1000,
             },
-            timeout=10,
+            timeout=self.default_timeout,
         )
         response.raise_for_status()
 
@@ -39,10 +49,10 @@ class YandexAdapter:
         logger.info("Fetching metadata for %s", path)
 
         response = requests.get(
-            self._resource_url(),
-            headers=self._headers(),
+            self.resource_url,
+            headers=self.headers,
             params={"path": self._disk_path(path)},
-            timeout=10,
+            timeout=self.default_timeout,
         )
         response.raise_for_status()
 
@@ -52,15 +62,15 @@ class YandexAdapter:
         logger.info("Reading file %s", path)
 
         response = requests.get(
-            self._download_url(),
-            headers=self._headers(),
+            self.download_url,
+            headers=self.headers,
             params={"path": self._disk_path(path)},
-            timeout=10,
+            timeout=self.default_timeout,
         )
         response.raise_for_status()
 
         href = response.json()["href"]
-        download_response = requests.get(href, timeout=30)
+        download_response = self.session.get(href, timeout=self.transfer_timeout)
         download_response.raise_for_status()
         return download_response.content
 
@@ -72,28 +82,33 @@ class YandexAdapter:
         logger.info("Uploading file %s", path)
 
         response = requests.get(
-            self._upload_url(),
-            headers=self._headers(),
+            self.upload_url,
+            headers=self.headers,
             params={
                 "path": self._disk_path(path),
                 "overwrite": "true",
             },
-            timeout=10,
+            timeout=self.default_timeout,
         )
         response.raise_for_status()
 
         href = response.json()["href"]
-        upload_response = requests.put(href, data=data, timeout=30)
+        upload_response = self.session.put(
+            href,
+            data=data,
+            headers={"Content-Type": "application/octet-stream"},
+            timeout=self.transfer_timeout,
+        )
         upload_response.raise_for_status()
 
     def mkdir(self, path: str) -> None:
         logger.info("Creating directory %s", path)
 
         response = requests.put(
-            self._resource_url(),
-            headers=self._headers(),
+            self.resource_url,
+            headers=self.headers,
             params={"path": self._disk_path(path)},
-            timeout=10,
+            timeout=self.default_timeout,
         )
         response.raise_for_status()
 
@@ -101,13 +116,13 @@ class YandexAdapter:
         logger.info("Deleting resource %s", path)
 
         response = requests.delete(
-            self._resource_url(),
-            headers=self._headers(),
+            self.resource_url,
+            headers=self.headers,
             params={
                 "path": self._disk_path(path),
                 "permanently": "true",
             },
-            timeout=10,
+            timeout=self.default_timeout,
         )
         response.raise_for_status()
 
@@ -115,14 +130,14 @@ class YandexAdapter:
         logger.info("Moving resource from %s to %s", old_path, new_path)
 
         response = requests.post(
-            self._move_url(),
-            headers=self._headers(),
+            self.move_url,
+            headers=self.headers,
             params={
                 "from": self._disk_path(old_path),
                 "path": self._disk_path(new_path),
                 "overwrite": "true",
             },
-            timeout=10,
+            timeout=self.default_timeout,
         )
         response.raise_for_status()
 
@@ -131,31 +146,29 @@ class YandexAdapter:
 
         response = requests.get(
             self.base_url,
-            headers=self._headers(),
-            timeout=10,
+            headers=self.headers,
+            timeout=self.default_timeout,
         )
         response.raise_for_status()
         return response.json()
 
-    def _headers(self) -> dict:
-        return {"Authorization": f"OAuth {self.token}"}
+    def _build_session(self) -> requests.Session:
+        retry = Retry(
+            total=3,
+            backoff_factor=0.3,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({"GET", "PUT", "POST", "DELETE"}),
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+        session = requests.Session()
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        return session
 
     def _disk_path(self, path: str) -> str:
         if path == "/":
             return "disk:/"
         return f"disk:{path}"
-
-    def _resource_url(self) -> str:
-        return f"{self.base_url}/resources"
-
-    def _download_url(self) -> str:
-        return f"{self._resource_url()}/download"
-
-    def _upload_url(self) -> str:
-        return f"{self._resource_url()}/upload"
-
-    def _move_url(self) -> str:
-        return f"{self._resource_url()}/move"
 
     def _normalize_resource(self, item: dict) -> dict:
         return {
