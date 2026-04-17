@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType=all/all;
+Actions=uploadToCloud;getCloudLink;
+X-KDE-Priority=TopLevel
+Icon=folder-cloud
+
+[Desktop Action uploadToCloud]
+Name=Upload to Cloud
+Icon=cloud-upload
+Exec=dbus-send --session --print-reply --dest=ru.hackathon.CloudService /ru/hackathon/CloudService ru.hackathon.CloudService.HandleAction string:"upload" string:"%f"
+
+[Desktop Action getCloudLink]
+Name=Get Public URL
+Icon=internet-services
+Exec=dbus-send --session --print-reply --dest=ru.hackathon.CloudService /ru/hackathon/CloudService ru.hackathon.CloudService.HandleAction string:"get_url" string:"%f"
