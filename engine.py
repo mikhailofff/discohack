@@ -92,39 +92,45 @@ class CloudFUSE(fuse.Operations):
         return 0
 
     def write(self, path, data, offset, fh):
-        logger.info(f"WRITE: {path} | Offset: {offset} | Length: {len(data)}")
-        current_content = b""
-        try:
-            current_content = self.adapter.read_file(path)
-        except Exception:
-            logger.info("WRITE: starting new content buffer for %s", path)
+        # Если файла нет в памяти, инициализируем буфер
+        if path not in self.data_buffer:
+            try:
+                # Пытаемся подтянуть существующий контент, если это дозапись
+                self.data_buffer[path] = bytearray(self.adapter.read_file(path))
+            except Exception:
+                self.data_buffer[path] = bytearray()
 
-        if offset > len(current_content):
-            current_content += b"\x00" * (offset - len(current_content))
-        new_content = current_content[:offset] + data
-        if offset + len(data) < len(current_content):
-            new_content += current_content[offset + len(data):]
+        buf = self.data_buffer[path]
+        # Расширяем буфер, если пишем за пределы
+        if offset + len(data) > len(buf):
+            buf.extend(b'\x00' * (offset + len(data) - len(buf)))
 
-        self.adapter.write_file(path, new_content)
-        new_size = len(new_content)
-        self.cache.set_node(path, size=new_size, is_dir=False)
+        # Пишем в память, а НЕ в облако
+        buf[offset:offset + len(data)] = data
+        self.cache.set_node(path, size=len(buf), is_dir=False)
         return len(data)
 
     def release(self, path, fh):
-        logger.info(f"RELEASE (Close): {path}")
+        # Вот теперь release важен! Когда файл закрывается,
+        # мы один раз отправляем накопленный буфер в облако.
+        if path in self.data_buffer:
+            logger.info(f"RELEASE: Syncing {path} to Yandex Disk...")
+            try:
+                self.adapter.write_file(path, bytes(self.data_buffer[path]))
+                # Очищаем память после успешной загрузки
+                del self.data_buffer[path]
+            except Exception as e:
+                logger.error(f"Failed to sync {path}: {e}")
         return 0
 
     def read(self, path, size, offset, fh):
-        logger.info(f"READ: {path} | Offset: {offset} | Size: {size}")
-        attrs = self.cache.get_attrs(path)
-        if not attrs:
-            raise fuse.FuseOSError(errno.ENOENT)
-        try:
-            content = self.adapter.read_file(path)
-            return content[offset:offset + size]
-        except Exception as exc:
-            logger.error("READ failed for %s: %s", path, exc)
-            raise fuse.FuseOSError(errno.EIO)
+        # Если файла нет в памяти, качаем его целиком ОДИН раз
+        if path not in self.data_buffer:
+            logger.info(f"READ (Buffer miss): Downloading {path}...")
+            self.data_buffer[path] = bytearray(self.adapter.read_file(path))
+
+        # Отдаем кусок из оперативной памяти — это мгновенно
+        return bytes(self.data_buffer[path][offset:offset + size])
 
     def mkdir(self, path, mode):
         logger.info(f"MKDIR: {path}")
