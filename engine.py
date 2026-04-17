@@ -38,6 +38,36 @@ class CloudFUSE(fuse.Operations):
     def _get_cache_path(self, path):
         return os.path.join(self.cache_dir, path.lstrip('/'))
 
+    def _ensure_local_copy(self, path):
+        local_path = self._get_cache_path(path)
+        attrs = self.getattr(path)
+        remote_size = attrs['st_size']
+        needs_download = not os.path.exists(local_path)
+        if not needs_download:
+            local_size = os.path.getsize(local_path)
+            if local_size != remote_size and path not in self.dirty_files:
+                logger.info(
+                    "CACHE INVALID: %s changed in cloud (local: %s, remote: %s)",
+                    path,
+                    local_size,
+                    remote_size,
+                )
+                needs_download = True
+
+        if needs_download:
+            logger.info("DOWNLOADING: %s to disk cache...", path)
+            try:
+                data = self.adapter.read_file(path)
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                with open(local_path, 'wb') as f:
+                    f.write(data)
+                self._evict_cache_if_needed()
+            except Exception as e:
+                logger.error(f"Failed to download {path}: {e}")
+                raise fuse.FuseOSError(errno.EIO)
+
+        return local_path
+
     def getattr(self, path, fh=None):
         basename = os.path.basename(path)
         if basename in ['.directory', '.hidden', '.Trash', '.Trash-1000', 'autorun.inf']:
@@ -71,28 +101,43 @@ class CloudFUSE(fuse.Operations):
         for r in dirents:
             yield r
 
-    def read(self, path, size, offset, fh):
-        local_path = self._get_cache_path(path)
+    def open(self, path, flags):
         attrs = self.getattr(path)
-        remote_size = attrs['st_size']
-        needs_download = not os.path.exists(local_path)
-        if not needs_download:
-            local_size = os.path.getsize(local_path)
-            if local_size != remote_size and path not in self.dirty_files:
-                logger.info(f"CACHE INVALID: {path} changed in cloud (local: {local_size}, remote: {remote_size})")
-                needs_download = True
-        if needs_download:
-            logger.info(f"DOWNLOADING: {path} to disk cache...")
-            try:
-                data = self.adapter.read_file(path)
-                os.makedirs(os.path.dirname(local_path), exist_ok=True)
-                with open(local_path, 'wb') as f:
-                    f.write(data)
-                self._evict_cache_if_needed()
-            except Exception as e:
-                logger.error(f"Failed to download {path}: {e}")
-                raise fuse.FuseOSError(errno.EIO)
+        if stat.S_ISDIR(attrs['st_mode']):
+            raise fuse.FuseOSError(errno.EISDIR)
 
+        self._ensure_local_copy(path)
+        return 0
+
+    def access(self, path, mode):
+        attrs = self.getattr(path)
+        perms = attrs['st_mode'] & 0o777
+
+        if mode == os.F_OK:
+            return 0
+        if mode & os.R_OK and not perms & 0o444:
+            raise fuse.FuseOSError(errno.EACCES)
+        if mode & os.W_OK and not perms & 0o222:
+            raise fuse.FuseOSError(errno.EACCES)
+        if mode & os.X_OK and not perms & 0o111:
+            raise fuse.FuseOSError(errno.EACCES)
+        return 0
+
+    def statfs(self, path):
+        return {
+            'f_bsize': 4096,
+            'f_frsize': 4096,
+            'f_blocks': 1024 * 1024,
+            'f_bfree': 1024 * 512,
+            'f_bavail': 1024 * 512,
+            'f_files': 1024 * 1024,
+            'f_ffree': 1024 * 512,
+            'f_favail': 1024 * 512,
+            'f_namemax': 255,
+        }
+
+    def read(self, path, size, offset, fh):
+        local_path = self._ensure_local_copy(path)
         with open(local_path, 'rb') as f:
             f.seek(offset)
             return f.read(size)
@@ -128,6 +173,9 @@ class CloudFUSE(fuse.Operations):
                 self._evict_cache_if_needed()
             except Exception as e:
                 logger.error(f"Failed to sync {path}: {e}")
+        return 0
+
+    def flush(self, path, fh):
         return 0
 
     def create(self, path, mode, fi=None):
