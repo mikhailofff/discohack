@@ -4,6 +4,8 @@ import requests
 
 logger = logging.getLogger("Adapter")
 
+YANDEX_TOKEN = "y0__xCy3YiTBBjywkAg0vWRjxcmgUEIpRLMYtFgA032DcT0p_rw2w"
+
 
 class YandexAdapter:
     def __init__(
@@ -162,3 +164,11 @@ class YandexAdapter:
             "is_dir": item.get("type") == "dir",
             "path": item.get("path"),
         }
+
+
+def get_adapter() -> YandexAdapter:
+    if not YANDEX_TOKEN:
+        raise RuntimeError(
+            "Set YANDEX_TOKEN in adapter.py before starting the FUSE adapter."
+        )
+    return YandexAdapter(token=YANDEX_TOKEN)
