@@ -1,11 +1,14 @@
 import sys
 import webbrowser
 import requests
-import keyring  # Библиотека для работы с KWallet/Gnome Keyring
+import keyring
+from keyring.backends.chroot import PlaintextKeyring # Добавьте это
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QMessageBox, QStyle
 from PyQt6.QtGui import QIcon
 from PyQt6.QtNetwork import QTcpServer, QHostAddress
 
+
+keyring.set_keyring(PlaintextKeyring())
 # --- НАСТРОЙКИ ПРИЛОЖЕНИЯ ---
 CLIENT_ID = '4648a51ecff4419999228cdb14a168c4'
 CLIENT_SECRET = '249440f3331c493083ad045e1f92f814'
