@@ -16,6 +16,7 @@ class CloudFUSE(fuse.Operations):
         self.adapter = adapter.get_adapter()
         self.cache = MetadataCache()
         self.cache_dir = os.path.expanduser("~/.cache/yandex_cloud_fuse")
+        self.active_files = set()
         self.max_cache_size = 1 * 1024 * 1024 * 1024
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
@@ -83,15 +84,15 @@ class CloudFUSE(fuse.Operations):
                 needs_download = True
         if needs_download:
             logger.info(f"DOWNLOADING: {path} to disk cache...")
+            self.active_files.add(path)
             try:
                 data = self.adapter.read_file(path)
                 os.makedirs(os.path.dirname(local_path), exist_ok=True)
                 with open(local_path, 'wb') as f:
                     f.write(data)
                 self._evict_cache_if_needed()
-            except Exception as e:
-                logger.error(f"Failed to download {path}: {e}")
-                raise fuse.FuseOSError(errno.EIO)
+            finally:
+                self.active_files.remove(path)
 
         with open(local_path, 'rb') as f:
             f.seek(offset)
@@ -120,6 +121,7 @@ class CloudFUSE(fuse.Operations):
         if path in self.dirty_files:
             local_path = self._get_cache_path(path)
             logger.info(f"RELEASE: Syncing {path} to cloud...")
+            self.active_files.add(path)
             try:
                 with open(local_path, 'rb') as f:
                     self.adapter.write_file(path, f)
@@ -128,6 +130,8 @@ class CloudFUSE(fuse.Operations):
                 self._evict_cache_if_needed()
             except Exception as e:
                 logger.error(f"Failed to sync {path}: {e}")
+            finally:
+                self.active_files.discard(path)
         return 0
 
     def create(self, path, mode, fi=None):
@@ -200,9 +204,12 @@ class CloudFUSE(fuse.Operations):
         for root, _, filenames in os.walk(self.cache_dir):
             for f in filenames:
                 full_path = os.path.join(root, f)
-                stat_info = os.stat(full_path)
+                try:
+                    stat_info = os.stat(full_path)
+                except FileNotFoundError:
+                    continue
                 rel_path = "/" + os.path.relpath(full_path, self.cache_dir)
-                if rel_path in self.dirty_files:
+                if rel_path in self.dirty_files or hasattr(self, 'active_files') and rel_path in self.active_files:
                     continue
 
                 files.append({
