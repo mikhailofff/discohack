@@ -8,8 +8,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Cache")
 
 class MetadataCache:
-    def __init__(self, ttl=60):
-        self.ttl = ttl
+    def __init__(self, dir_ttl=10, file_ttl=300):
+        self.dir_ttl = dir_ttl
+        self.file_ttl = file_ttl
         self._nodes = {}
         self._directory_contents = {}
         self.current_uid = os.getuid()
@@ -31,7 +32,7 @@ class MetadataCache:
 
         self._nodes[path] = {
             'attrs': attrs,
-            'expires': now + self.ttl
+            'expires': time.time() + self.file_ttl
         }
         logger.info(f"SET node cache: {path}")
 
@@ -49,7 +50,7 @@ class MetadataCache:
     def set_directory_list(self, path, file_names):
         self._directory_contents[path] = {
             'names': file_names,
-            'expires': time.time() + self.ttl
+            'expires': time.time() + self.dir_ttl
         }
         logger.info(f"SET dir list cache: {path}")
 
@@ -66,5 +67,6 @@ class MetadataCache:
 
     def invalidate(self, path):
         self._nodes.pop(path, None)
-        self._directory_contents.pop(path, None)
+        parent = os.path.dirname(path)
+        self._directory_contents.pop(parent, None)
         logger.info(f"INVALIDATE: {path}")

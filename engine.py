@@ -62,7 +62,7 @@ class CloudFUSE(fuse.Operations):
             remote_files = self.adapter.listdir(path)
             file_names = [f['name'] for f in remote_files]
             for f in remote_files:
-                child_path = os.path.join(path, f['name']).replace('\\', '/')
+                child_path = os.path.join(path, f['name']).replace('\\', '/').replace('//', '/')
                 self.cache.set_node(child_path, size=f['size'], is_dir=f.get('is_dir', False))
             self.cache.set_directory_list(path, file_names)
             cached_list = file_names
