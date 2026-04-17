@@ -1,4 +1,5 @@
 import logging
+import requests
 
 logger = logging.getLogger("Adapter")
 
@@ -8,7 +9,33 @@ class YandexAdapter:
         self.base_url = base_url
     
     def listdir(self, path: str) -> list[dict]:
-        raise NotImplementedError
+        logger.info("Fetching directory listing for %s", path)
+
+        response = requests.get(
+            self._resource_url(),
+            headers=self._headers(),
+            params={
+                "path": self._disk_path(path),
+                "limit": 1000,
+            },
+            timeout=10,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+        embedded = data.get("_embedded", {})
+        items = embedded.get("items", [])
+        result = []
+        for item in items:
+            result.append({
+                "name": item["name"],
+                "size": item.get("size", 0),
+                "is_dir": item.get("type") == "dir",
+                "path": item.get("path"),
+            }
+        )
+        return result
     
     def get_metadata(self, path: str) -> dict:
         raise NotImplementedError
