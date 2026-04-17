@@ -111,14 +111,15 @@ class CloudFUSE(fuse.Operations):
     def release(self, path, fh):
         if path in self.dirty_files:
             local_path = self._get_cache_path(path)
-            logger.info(f"RELEASE: Uploading changed file {path} to cloud...")
+            logger.info(f"RELEASE: Syncing {path} to cloud...")
             try:
                 with open(local_path, 'rb') as f:
-                    self.adapter.write_file(path, f.read())
+                    self.adapter.write_file(path, f)
+
                 self.dirty_files.remove(path)
                 self._evict_cache_if_needed()
             except Exception as e:
-                logger.error(f"Failed to upload {path}: {e}")
+                logger.error(f"Failed to sync {path}: {e}")
         return 0
 
     def create(self, path, mode, fi=None):

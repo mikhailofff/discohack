@@ -78,7 +78,9 @@ class YandexAdapter:
         logger.info("Creating empty file %s", path)
         self.write_file(path, b"")
 
-    def write_file(self, path: str, data: bytes) -> None:
+    n
+
+    def write_file(self, path: str, data) -> None:
         logger.info("Uploading file %s", path)
 
         response = requests.get(
@@ -91,7 +93,6 @@ class YandexAdapter:
             timeout=self.default_timeout,
         )
         response.raise_for_status()
-
         href = response.json()["href"]
         upload_response = self.session.put(
             href,
