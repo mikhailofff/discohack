@@ -3,7 +3,7 @@ import webbrowser
 import requests
 import os
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QMessageBox, QStyle
-from PyQt6.QtGui import QIcon, QAction
+from PyQt6.QtGui import QAction
 from PyQt6.QtNetwork import QTcpServer, QHostAddress
 
 # --- НАСТРОЙКИ ---
@@ -15,7 +15,7 @@ TOKEN_FILE = os.path.expanduser("~/.alt_drive_token")
 class AuthServer(QTcpServer):
     def __init__(self, app_instance, parent=None):
         super().__init__(parent)
-        self.app_instance = app_instance # Ссылка на приложение для обновления меню
+        self.app_instance = app_instance
         self.processed_codes = set()
         if not self.listen(QHostAddress.SpecialAddress.LocalHost, REDIRECT_PORT):
             print(f"ОШИБКА: Порт {REDIRECT_PORT} занят.")
@@ -27,6 +27,7 @@ class AuthServer(QTcpServer):
             client.waitForReadyRead(2000)
             raw_data = client.readAll().data().decode()
             
+            # Игнорируем лишние запросы
             if "favicon.ico" in raw_data or "code=" not in raw_data:
                 client.disconnectFromHost()
                 return
@@ -42,7 +43,7 @@ class AuthServer(QTcpServer):
                 response = (
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
                     "Connection: close\r\n\r\n"
-                    "<html><body><h2>Авторизация успешна!</h2><p>Окно можно закрыть.</p></body></html>"
+                    "<html><body><h2>Успешно!</h2></body></html>"
                 )
                 client.write(response.encode())
                 client.flush()
@@ -55,25 +56,17 @@ class AuthServer(QTcpServer):
 
     def exchange_code_for_token(self, code):
         url = "https://oauth.yandex.ru/token"
-        data = {
-            'grant_type': 'authorization_code',
-            'code': code,
-            'client_id': CLIENT_ID,
-            'client_secret': CLIENT_SECRET
-        }
+        data = {'grant_type': 'authorization_code', 'code': code, 'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET}
         try:
             r = requests.post(url, data=data)
-            res = r.json()
-            token = res.get('access_token')
+            token = r.json().get('access_token')
             if token:
                 with open(TOKEN_FILE, "w") as f:
                     f.write(token)
                 print(f"Получен ключ: {token}")
-                # ОБНОВЛЯЕМ МЕНЮ ПОСЛЕ УСПЕХА
-                self.app_instance.update_menu()
+                # Вызываем обновление UI
+                self.app_instance.refresh_ui()
                 QMessageBox.information(None, "Успех", "Авторизация прошла успешно!")
-            else:
-                print(f"Ошибка Яндекса: {res}")
         except Exception as e:
             print(f"Ошибка сети: {e}")
 
@@ -86,44 +79,46 @@ class CloudTrayApp:
         icon = self.qt_app.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon)
         self.tray = QSystemTrayIcon(icon)
         
-        # Создаем переменную для хранения меню, чтобы потом его удалять
-        self.main_menu = None 
+        # Создаем ОДНО меню на все время работы
+        self.menu = QMenu()
         
-        self.update_menu()
+        # Создаем действия (кнопки)
+        self.login_act = QAction("Войти в Диск", self.menu)
+        self.login_act.triggered.connect(self.open_browser)
+        
+        self.logout_act = QAction("Сбросить авторизацию", self.menu)
+        self.logout_act.triggered.connect(self.logout)
+        
+        self.exit_act = QAction("Выход", self.menu)
+        self.exit_act.triggered.connect(sys.exit)
+        
+        # Добавляем их в меню (порядок важен)
+        self.menu.addAction(self.login_act)
+        self.menu.addAction(self.logout_act)
+        self.menu.addSeparator()
+        self.menu.addAction(self.exit_act)
+        
+        self.tray.setContextMenu(self.menu)
         self.tray.show()
-
-    def update_menu(self):
-        # 1. Если меню уже существует — принудительно удаляем его из памяти
-        if self.main_menu:
-            self.main_menu.clear()
-            self.main_menu.deleteLater() 
         
-        # 2. Создаем абсолютно новый объект меню
-        self.main_menu = QMenu()
-        has_token = os.path.exists(TOKEN_FILE)
+        # Первичная настройка видимости
+        self.refresh_ui()
 
-        if not has_token:
-            print("Обновление меню: Режим входа")
-            login_act = self.main_menu.addAction("Войти в Диск")
-            login_act.triggered.connect(self.open_browser)
-        else:
-            print("Обновление меню: Режим сброса")
-            logout_act = self.main_menu.addAction("Сбросить авторизацию")
-            logout_act.triggered.connect(self.logout)
-            
-            # Читаем токен для консоли
+    def refresh_ui(self):
+        """Прячет или показывает нужные кнопки в зависимости от наличия токена"""
+        has_token = os.path.exists(TOKEN_FILE)
+        
+        if has_token:
+            self.login_act.setVisible(False)
+            self.logout_act.setVisible(True)
             try:
                 with open(TOKEN_FILE, "r") as f:
                     print(f"Получен ключ: {f.read().strip()}")
-            except:
-                pass
-
-        self.main_menu.addSeparator()
-        exit_act = self.main_menu.addAction("Выход")
-        exit_act.triggered.connect(sys.exit)
-        
-        # 3. Устанавливаем свежее меню в трей
-        self.tray.setContextMenu(self.main_menu)
+            except: pass
+        else:
+            self.login_act.setVisible(True)
+            self.logout_act.setVisible(False)
+            print("Ключ не найден. Режим входа.")
 
     def open_browser(self):
         url = f"https://oauth.yandex.ru/authorize?response_type=code&client_id={CLIENT_ID}"
@@ -133,7 +128,7 @@ class CloudTrayApp:
         if os.path.exists(TOKEN_FILE):
             os.remove(TOKEN_FILE)
             print("Авторизация сброшена.")
-            self.update_menu() # Сразу обновляем меню, чтобы появилась кнопка "Войти"
+            self.refresh_ui()
             QMessageBox.information(None, "Инфо", "Авторизация удалена.")
 
     def run(self):
