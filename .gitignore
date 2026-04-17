@@ -34,3 +34,5 @@ env/
 *.swo
 
 .DS_Store
+gdrive_service/credentials.json
+gdrive_service/token.json
