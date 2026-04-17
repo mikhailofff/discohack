@@ -22,6 +22,8 @@ class YandexAdapter:
         self.download_url = f"{self.resource_url}/download"
         self.upload_url = f"{self.resource_url}/upload"
         self.move_url = f"{self.resource_url}/move"
+        self.publish_url = f"{self.resource_url}/publish"
+        self.unpublish_url = f"{self.resource_url}/unpublish"
         self.default_timeout = (3, 10)
         self.transfer_timeout = (3, 30)
         self.session = self._build_session()
@@ -151,6 +153,54 @@ class YandexAdapter:
         )
         response.raise_for_status()
         return response.json()
+
+    def publish(self, path: str) -> dict:
+        logger.info("Publishing resource %s", path)
+
+        response = self.session.put(
+            self.publish_url,
+            headers=self.headers,
+            params={"path": self._disk_path(path)},
+            timeout=self.default_timeout,
+        )
+        response.raise_for_status()
+
+        return self.get_public_info(path)
+
+    def get_public_link(self, path: str) -> str:
+        logger.info("Fetching public link for %s", path)
+
+        public_info = self.get_public_info(path)
+        public_url = public_info.get("public_url")
+        if not public_url:
+            raise RuntimeError(f"Resource {path} is not published")
+        return public_url
+
+    def get_public_info(self, path: str) -> dict:
+        logger.info("Fetching public info for %s", path)
+
+        response = self.session.get(
+            self.resource_url,
+            headers=self.headers,
+            params={
+                "path": self._disk_path(path),
+                "fields": "name,path,type,size,public_key,public_url",
+            },
+            timeout=self.default_timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def unpublish(self, path: str) -> None:
+        logger.info("Unpublishing resource %s", path)
+
+        response = self.session.put(
+            self.unpublish_url,
+            headers=self.headers,
+            params={"path": self._disk_path(path)},
+            timeout=self.default_timeout,
+        )
+        response.raise_for_status()
 
     def _build_session(self) -> requests.Session:
         retry = Retry(
