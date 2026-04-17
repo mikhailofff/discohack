@@ -81,40 +81,49 @@ class CloudTrayApp:
     def __init__(self):
         self.qt_app = QApplication(sys.argv)
         self.qt_app.setQuitOnLastWindowClosed(False)
-        self.server = AuthServer(self) # Передаем self сервера
+        self.server = AuthServer(self)
         
         icon = self.qt_app.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon)
         self.tray = QSystemTrayIcon(icon)
         
-        # Вызываем начальное построение меню
+        # Создаем переменную для хранения меню, чтобы потом его удалять
+        self.main_menu = None 
+        
         self.update_menu()
         self.tray.show()
 
     def update_menu(self):
-        """Метод для динамической перерисовки меню"""
-        menu = QMenu()
+        # 1. Если меню уже существует — принудительно удаляем его из памяти
+        if self.main_menu:
+            self.main_menu.clear()
+            self.main_menu.deleteLater() 
+        
+        # 2. Создаем абсолютно новый объект меню
+        self.main_menu = QMenu()
         has_token = os.path.exists(TOKEN_FILE)
 
         if not has_token:
-            # Если ключа нет — показываем только вход
-            login_act = menu.addAction("Войти в Диск")
+            print("Обновление меню: Режим входа")
+            login_act = self.main_menu.addAction("Войти в Диск")
             login_act.triggered.connect(self.open_browser)
-            print("Меню: Режим ожидания входа")
         else:
-            # Если ключ есть — убираем вход, показываем сброс
-            logout_act = menu.addAction("Сбросить авторизацию")
+            print("Обновление меню: Режим сброса")
+            logout_act = self.main_menu.addAction("Сбросить авторизацию")
             logout_act.triggered.connect(self.logout)
             
-            # Читаем токен для консоли при старте/обновлении
-            with open(TOKEN_FILE, "r") as f:
-                print(f"Получен ключ: {f.read().strip()}")
+            # Читаем токен для консоли
+            try:
+                with open(TOKEN_FILE, "r") as f:
+                    print(f"Получен ключ: {f.read().strip()}")
+            except:
+                pass
 
-        menu.addSeparator()
-        exit_act = menu.addAction("Выход")
+        self.main_menu.addSeparator()
+        exit_act = self.main_menu.addAction("Выход")
         exit_act.triggered.connect(sys.exit)
         
-        # Устанавливаем новое меню в трей
-        self.tray.setContextMenu(menu)
+        # 3. Устанавливаем свежее меню в трей
+        self.tray.setContextMenu(self.main_menu)
 
     def open_browser(self):
         url = f"https://oauth.yandex.ru/authorize?response_type=code&client_id={CLIENT_ID}"
