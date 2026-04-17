@@ -5,16 +5,16 @@ from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QMessageBox, Q
 from PyQt6.QtGui import QIcon
 from PyQt6.QtNetwork import QTcpServer, QHostAddress
 
-# --- ВСТАВЬТЕ ВАШИ ДАННЫЕ ИЗ ЯНДЕКС ID ---
-CLIENT_ID = 'ВАШ_ID'
-CLIENT_SECRET = 'ВАШ_SECRET'
+
+CLIENT_ID = '4648a51ecff4419999228cdb14a168c4'
+CLIENT_SECRET = '249440f3331c493083ad045e1f92f814'
 REDIRECT_PORT = 8080
 
 class AuthServer(QTcpServer):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.access_token = None
-        # ИСПРАВЛЕНО: Добавлен SpecialAddress для совместимости с PyQt6
+        
         if not self.listen(QHostAddress.SpecialAddress.LocalHost, REDIRECT_PORT):
             print(f"Не удалось запустить сервер на порту {REDIRECT_PORT}")
         
