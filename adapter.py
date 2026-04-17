@@ -78,7 +78,6 @@ class YandexAdapter:
         logger.info("Creating empty file %s", path)
         self.write_file(path, b"")
 
-    n
 
     def write_file(self, path: str, data) -> None:
         logger.info("Uploading file %s", path)
