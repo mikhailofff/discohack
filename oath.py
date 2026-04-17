@@ -2,34 +2,23 @@ import sys
 import webbrowser
 import requests
 import os
-import keyring
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QMessageBox, QStyle
 from PyQt6.QtGui import QIcon
 from PyQt6.QtNetwork import QTcpServer, QHostAddress
 
-# --- НАСТРОЙКА СТАБИЛЬНОСТИ KEYRING ---
-try:
-    # Пытаемся проверить, доступен ли системный кошелек
-    keyring.get_password("test", "test")
-except Exception:
-    # Если системный кошелек (KWallet/D-Bus) выдает ошибку,
-    # принудительно используем простой зашифрованный файл
-    from keyring.backends.file import EncryptedKeyring
-    keyring.set_keyring(EncryptedKeyring())
-    print("Системный кошелек недоступен. Используется зашифрованный файл хранилища.")
-
-# --- ДАННЫЕ ПРИЛОЖЕНИЯ ---
+# --- НАСТРОЙКИ ---
 CLIENT_ID = '4648a51ecff4419999228cdb14a168c4'
 CLIENT_SECRET = '249440f3331c493083ad045e1f92f814'
 REDIRECT_PORT = 8080
-APP_NAME = "AltLinuxCloud"
+# Скрытый файл для хранения токена в домашней папке
+TOKEN_FILE = os.path.expanduser("~/.alt_drive_token")
 
 class AuthServer(QTcpServer):
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Исправлено для PyQt6: используем SpecialAddress
+        # Важно: используем SpecialAddress для PyQt6
         if not self.listen(QHostAddress.SpecialAddress.LocalHost, REDIRECT_PORT):
-            print(f"Ошибка: Порт {REDIRECT_PORT} занят. Попробуйте 'killall -9 python3'")
+            print(f"ОШИБКА: Порт {REDIRECT_PORT} занят. Введите: killall -9 python3")
         self.newConnection.connect(self.handle_connection)
 
     def handle_connection(self):
@@ -41,16 +30,14 @@ class AuthServer(QTcpServer):
                 try:
                     code = data.split("code=")[1].split(" ")[0]
                     response = (
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
-                        "Connection: close\r\n\r\n"
-                        "<html><body style='text-align:center;padding-top:50px;font-family:sans-serif;'>"
-                        "<h2>Авторизация успешна!</h2><p>Окно можно закрыть.</p></body></html>"
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n"
+                        "<html><body><h2>Авторизация успешна!</h2><p>Окно можно закрыть.</p></body></html>"
                     )
                     client.write(response.encode())
                     client.flush()
                     self.exchange_code_for_token(code)
                 except Exception as e:
-                    print(f"Ошибка разбора кода: {e}")
+                    print(f"Ошибка парсинга кода: {e}")
             client.waitForBytesWritten(1000)
             client.disconnectFromHost()
 
@@ -64,22 +51,17 @@ class AuthServer(QTcpServer):
         }
         try:
             r = requests.post(url, data=data)
-            result = r.json()
-            token = result.get('access_token')
+            res = r.json()
+            token = res.get('access_token')
             if token:
-                keyring.set_password(APP_NAME, "yandex_token", token)
+                with open(TOKEN_FILE, "w") as f:
+                    f.write(token)
                 print(f"Получен ключ: {token}")
-                self.on_success()
+                QMessageBox.information(None, "Успех", "Авторизация прошла успешно!")
             else:
-                print(f"Яндекс вернул ошибку: {result}")
+                print(f"Ошибка Яндекса: {res}")
         except Exception as e:
             print(f"Ошибка сети: {e}")
-
-    def on_success(self):
-        msg = QMessageBox()
-        msg.setWindowTitle("Яндекс.Диск")
-        msg.setText("Авторизация прошла успешно!")
-        msg.exec()
 
 class CloudTrayApp:
     def __init__(self):
@@ -88,29 +70,26 @@ class CloudTrayApp:
         self.server = AuthServer()
         
         # Проверка токена при старте
-        try:
-            saved_token = keyring.get_password(APP_NAME, "yandex_token")
-            if saved_token:
+        if os.path.exists(TOKEN_FILE):
+            with open(TOKEN_FILE, "r") as f:
+                saved_token = f.read().strip()
                 print(f"Получен ключ: {saved_token}")
-            else:
-                print("Ключ не найден. Требуется вход.")
-        except Exception as e:
-            print(f"Ошибка чтения ключа: {e}")
+        else:
+            print("Ключ не найден. Нужно войти в аккаунт.")
 
-        # Иконка из стандартной темы Qt
         icon = self.qt_app.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon)
         self.tray = QSystemTrayIcon(icon)
         
         self.menu = QMenu()
-        login_action = self.menu.addAction("Войти в Диск")
-        login_action.triggered.connect(self.open_browser)
+        login_act = self.menu.addAction("Войти в Диск")
+        login_act.triggered.connect(self.open_browser)
         
-        logout_action = self.menu.addAction("Сбросить авторизацию")
-        logout_action.triggered.connect(self.logout)
+        logout_act = self.menu.addAction("Сбросить авторизацию")
+        logout_act.triggered.connect(self.logout)
         
         self.menu.addSeparator()
-        exit_action = self.menu.addAction("Выход")
-        exit_action.triggered.connect(sys.exit)
+        exit_act = self.menu.addAction("Выход")
+        exit_act.triggered.connect(sys.exit)
         
         self.tray.setContextMenu(self.menu)
         self.tray.show()
@@ -120,11 +99,10 @@ class CloudTrayApp:
         webbrowser.open(url)
 
     def logout(self):
-        try:
-            keyring.delete_password(APP_NAME, "yandex_token")
-            QMessageBox.information(None, "Успех", "Авторизация сброшена.")
-        except Exception as e:
-            print(f"Не удалось удалить ключ: {e}")
+        if os.path.exists(TOKEN_FILE):
+            os.remove(TOKEN_FILE)
+            print("Авторизация сброшена.")
+            QMessageBox.information(None, "Инфо", "Авторизация удалена.")
 
     def run(self):
         return self.qt_app.exec()
