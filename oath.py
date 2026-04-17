@@ -21,22 +21,30 @@ class AuthServer(QTcpServer):
         self.newConnection.connect(self.handle_connection)
 
     def handle_connection(self):
+        print("--- [DEBUG] Кто-то стучится в порт 8080! ---")
         client = self.nextPendingConnection()
         if client:
-            while client.canReadLine():
-                line = client.readLine().data().decode()
-                if "GET" in line:
-                    try:
-                        code = line.split("code=")[1].split(" ")[0]
-                        self.exchange_code_for_token(code)
+            client.waitForReadyRead(2000) 
+            data = client.readAll().data().decode()
+            print(f"--- [DEBUG] Получены данные:\n{data[:100]}...") 
+
+            if "GET" in data:
+                try:
+                    # Ищем code=
+                    parts = data.split("code=")
+                    if len(parts) > 1:
+                        code = parts[1].split(" ")[0]
+                        print(f"--- [DEBUG] Найден код: {code}")
+                        
                         response = (
-                            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n"
-                            "<html><body style='font-family: sans-serif; text-align: center; margin-top: 50px;'>"
-                            "<h2>Авторизация успешна!</h2><p>Можете закрыть вкладку.</p></body></html>"
+                            "HTTP/1.1 200 OK\r\n"
+                            "Content-Type: text/html; charset=utf-8\r\n\r\n"
+                            "Успех! Ключ перехвачен."
                         )
                         client.write(response.encode())
-                    except Exception as e:
-                        print(f"Ошибка разбора: {e}")
+                        self.exchange_code_for_token(code)
+                except Exception as e:
+                    print(f"--- [DEBUG] Ошибка разбора: {e}")
             client.disconnectFromHost()
 
     def exchange_code_for_token(self, code):
