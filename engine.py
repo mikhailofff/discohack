@@ -46,8 +46,6 @@ class CloudFUSE(fuse.Operations):
                 file_names = [f['name'] for f in remote_files]
                 for f in remote_files:
                     self.cache.set_node(f"/{f['name']}", size=f['size'], is_dir=False)
-
-                # Обновляем список файлов в кэше
                 self.cache.set_directory_list('/', file_names)
                 cached_list = file_names
             else:
@@ -91,3 +89,69 @@ class CloudFUSE(fuse.Operations):
     def release(self, path, fh):
         logger.info(f"RELEASE (Close): {path}")
         return 0
+
+    def read(self, path, size, offset, fh):
+        logger.info(f"READ: {path} | Offset: {offset} | Size: {size}")
+        attrs = self.cache.get_attrs(path)
+        if not attrs:
+            raise fuse.FuseOSError(errno.ENOENT)
+        try:
+            content = adapter.get_file_content(path)
+            return content[offset:offset + size]
+        except AttributeError:
+            # Если в адаптере еще нет метода, отдаем заглушку,
+            # но уже для любого файла, чтобы система не падала
+            dummy_data = f"Content of {path}\n".encode() * 100
+            return dummy_data[offset:offset + size]
+
+    def mkdir(self, path, mode):
+        logger.info(f"MKDIR: {path}")
+        self.cache.set_node(path, size=4096, is_dir=True)
+        parent_path = os.path.dirname(path)
+        dir_name = os.path.basename(path)
+
+        children = self.cache.get_directory_list(parent_path) or []
+        if dir_name not in children:
+            children.append(dir_name)
+            self.cache.set_directory_list(parent_path, children)
+        return 0
+
+    def rmdir(self, path):
+        """Удаление пустой папки"""
+        logger.info(f"RMDIR: {path}")
+        # Тут должна быть проверка, пуста ли папка в кэше
+        # Удаляем из кэша ноду и запись в родительском списке
+        self._remove_from_parent_list(path)
+        return 0
+
+    def unlink(self, path):
+        """Удаление файла"""
+        logger.info(f"UNLINK: {path}")
+        self._remove_from_parent_list(path)
+        # В реальности здесь: adapter.delete_file(path)
+        return 0
+
+    def rename(self, old, new):
+        logger.info(f"RENAME: from {old} to {new}")
+        attrs = self.cache.get_attrs(old)
+        if attrs:
+            is_dir = (attrs['st_mode'] & 0o40000) != 0
+            self.cache.set_node(new, size=attrs['st_size'], is_dir=is_dir)
+
+        self._remove_from_parent_list(old)
+        parent_new = os.path.dirname(new)
+        name_new = os.path.basename(new)
+        children = self.cache.get_directory_list(parent_new) or []
+        if name_new not in children:
+            children.append(name_new)
+            self.cache.set_directory_list(parent_new, children)
+
+        return 0
+
+    def _remove_from_parent_list(self, path):
+        parent_path = os.path.dirname(path)
+        name = os.path.basename(path)
+        children = self.cache.get_directory_list(parent_path) or []
+        if name in children:
+            children.remove(name)
+            self.cache.set_directory_list(parent_path, children)

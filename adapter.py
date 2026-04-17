@@ -12,3 +12,6 @@ def get_remote_files():
 
 def download_file_content(path):
     return b"Real data from Yandex will be here soon!"
+
+def get_file_content(path):
+    return f"This is real-time simulated content for {path}".encode()
