@@ -10,13 +10,12 @@ from PyQt6.QtNetwork import QTcpServer, QHostAddress
 CLIENT_ID = '4648a51ecff4419999228cdb14a168c4'
 CLIENT_SECRET = '249440f3331c493083ad045e1f92f814'
 REDIRECT_PORT = 8080
-# Скрытый файл для хранения токена в домашней папке
 TOKEN_FILE = os.path.expanduser("~/.alt_drive_token")
 
 class AuthServer(QTcpServer):
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Важно: используем SpecialAddress для PyQt6
+        
         if not self.listen(QHostAddress.SpecialAddress.LocalHost, REDIRECT_PORT):
             print(f"ОШИБКА: Порт {REDIRECT_PORT} занят. Введите: killall -9 python3")
         self.newConnection.connect(self.handle_connection)
@@ -26,18 +25,39 @@ class AuthServer(QTcpServer):
         if client:
             client.waitForReadyRead(2000)
             data = client.readAll().data().decode()
+            
+            
+            if "favicon.ico" in data:
+                client.disconnectFromHost()
+                return
+
             if "GET" in data:
                 try:
-                    code = data.split("code=")[1].split(" ")[0]
+                    
+                    current_code = data.split("code=")[1].split(" ")[0]
+                    
+                    
+                    if hasattr(self, 'last_processed_code') and self.last_processed_code == current_code:
+                        client.disconnectFromHost()
+                        return
+                    
+                    self.last_processed_code = current_code 
+
+                    
                     response = (
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n"
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+                        "Connection: close\r\n\r\n"
                         "<html><body><h2>Авторизация успешна!</h2><p>Окно можно закрыть.</p></body></html>"
                     )
                     client.write(response.encode())
                     client.flush()
-                    self.exchange_code_for_token(code)
-                except Exception as e:
-                    print(f"Ошибка парсинга кода: {e}")
+                    
+                    
+                    self.exchange_code_for_token(current_code)
+                    
+                except (IndexError, Exception):
+                    pass
+            
             client.waitForBytesWritten(1000)
             client.disconnectFromHost()
 
