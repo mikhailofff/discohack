@@ -174,7 +174,7 @@ class CloudFUSE(fuse.Operations):
                     os.remove(local_path)
                 raise fuse.FuseOSError(errno.EIO)
             finally:
-                self.active_files.remove(path)
+                self.active_files.discard(path)
         else:
             self._mark_local_cache_fresh(path, os.path.getsize(local_path))
             self._touch_local_cache(path)
