@@ -13,14 +13,13 @@ logger = logging.getLogger("Engine")
 
 class CloudFUSE(fuse.Operations):
     def __init__(self, token, cache_dir, max_cache_size):
-        # ИЗМЕНЕНИЕ: Теперь адаптер инициализируется переданным токеном
         self.adapter = adapter.get_adapter(token)
         self.cache = MetadataCache()
         self.cache_dir = cache_dir
         self.max_cache_size = max_cache_size
         self.active_files = set()
         self.dirty_files = set()
-
+        self.current_cache_size = self._calculate_initial_cache_size()
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
 
@@ -116,21 +115,42 @@ class CloudFUSE(fuse.Operations):
     def write(self, path, data, offset, fh):
         local_path = self._get_cache_path(path)
         self.dirty_files.add(path)
+        old_local_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
         if not os.path.exists(local_path):
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
-            try:
-                base_content = self.adapter.read_file(path)
-            except:
+            attrs = self.cache.get_attrs(path)
+            if attrs and attrs['st_size'] == 0:
                 base_content = b""
+            else:
+                try:
+                    base_content = self.adapter.read_file(path)
+                except:
+                    base_content = b""
             with open(local_path, 'wb') as f:
                 f.write(base_content)
+            old_local_size = len(base_content)
         with open(local_path, 'r+b') as f:
             f.seek(offset)
             f.write(data)
 
-        new_size = os.path.getsize(local_path)
-        self.cache.set_node(path, size=new_size, is_dir=False)
+        new_local_size = os.path.getsize(local_path)
+        self.current_cache_size += (new_local_size - old_local_size)
+        self.cache.set_node(path, size=new_local_size, is_dir=False)
+        self._evict_cache_if_needed()
         return len(data)
+
+    def utimens(self, path, times=None):
+        attrs = self.cache.get_attrs(path)
+        if attrs:
+            self.cache.set_node(path, size=attrs['st_size'], is_dir=stat.S_ISDIR(attrs['st_mode']))
+        return 0
+
+    def mkdir(self, path, mode):
+        logger.info(f"MKDIR: {path}")
+        self.adapter.mkdir(path)
+        self.cache.set_node(path, size=4096, is_dir=True)
+        self._add_to_parent_list(path)
+        return 0
 
     def release(self, path, fh):
         if path in self.dirty_files:
@@ -162,18 +182,25 @@ class CloudFUSE(fuse.Operations):
 
     def truncate(self, path, length, fh=None):
         local_path = self._get_cache_path(path)
+        old_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
         if os.path.exists(local_path):
             with open(local_path, 'r+b') as f:
                 f.truncate(length)
+        self.current_cache_size += (length - old_size)
         self.cache.set_node(path, size=length, is_dir=False)
         self.dirty_files.add(path)
+        self._evict_cache_if_needed()
         return 0
 
     def unlink(self, path):
+        logger.info(f"UNLINK: {path}")
         self.adapter.delete(path)
         local_path = self._get_cache_path(path)
         if os.path.exists(local_path):
+            file_size = os.path.getsize(local_path)
             os.remove(local_path)
+            self.current_cache_size -= file_size
+            logger.info(f"Cache size updated: -{file_size} bytes")
         if hasattr(self.cache, 'remove_node'):
             self.cache.remove_node(path)
         self._remove_from_parent_list(path)
@@ -218,34 +245,38 @@ class CloudFUSE(fuse.Operations):
         self.cache.set_directory_list(parent, None)
 
     def _evict_cache_if_needed(self):
+        if self.current_cache_size <= self.max_cache_size:
+            return
+        logger.info(f"Cache cleanup triggered. Current: {self.current_cache_size}, Limit: {self.max_cache_size}")
         files = []
-        total_size = 0
         for root, _, filenames in os.walk(self.cache_dir):
             for f in filenames:
                 full_path = os.path.join(root, f)
-                try:
-                    stat_info = os.stat(full_path)
-                except FileNotFoundError:
-                    continue
-                rel_path = "/" + os.path.relpath(full_path, self.cache_dir)
+                rel_path = "/" + os.path.relpath(full_path, self.cache_dir).replace('\\', '/')
                 if rel_path in self.dirty_files or rel_path in self.active_files:
                     continue
-
-                files.append({
-                    'path': full_path,
-                    'size': stat_info.st_size,
-                    'atime': stat_info.st_atime
-                })
-                total_size += stat_info.st_size
-
-        if total_size > self.max_cache_size:
-            logger.info(f"Cache cleanup... ({total_size} bytes)")
-            files.sort(key=lambda x: x['atime'])
-            for f in files:
-                if total_size <= self.max_cache_size:
-                    break
                 try:
-                    os.remove(f['path'])
-                    total_size -= f['size']
-                except Exception as e:
-                    logger.error(f"Eviction failed: {e}")
+                    stat_info = os.stat(full_path)
+                    files.append({
+                        'path': full_path,
+                        'size': stat_info.st_size,
+                        'atime': stat_info.st_atime
+                    })
+                except FileNotFoundError:
+                    continue
+        files.sort(key=lambda x: x['atime'])
+        for f in files:
+            if self.current_cache_size <= self.max_cache_size:
+                break
+            try:
+                os.remove(f['path'])
+                self.current_cache_size -= f['size']
+                logger.info(f"Evicted: {f['path']} (freed {f['size']} bytes)")
+            except Exception as e:
+                logger.error(f"Failed to evict {f['path']}: {e}")
+    def _calculate_initial_cache_size(self):
+        total = 0
+        for root, _, filenames in os.walk(self.cache_dir):
+            for f in filenames:
+                total += os.path.getsize(os.path.join(root, f))
+        return total
