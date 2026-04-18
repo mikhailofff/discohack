@@ -121,29 +121,29 @@ class CloudFUSE(fuse.Operations):
     def write(self, path, data, offset, fh):
         local_path = self._get_cache_path(path)
         self.dirty_files.add(path)
-        old_local_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
         if not os.path.exists(local_path):
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
             attrs = self.cache.get_attrs(path)
-            if attrs and attrs['st_size'] == 0:
-                base_content = b""
-            else:
+            if attrs and attrs['st_size'] > 0:
                 try:
-                    base_content = self.adapter.download_file(path, local_path)
-                except:
-                    base_content = b""
-            with open(local_path, 'wb') as f:
-                f.write(base_content)
-            old_local_size = len(base_content)
+                    self.adapter.download_file(path, local_path)
+                except Exception as e:
+                    logger.error(f"Failed to fetch base file for write: {e}")
+
+            if not os.path.exists(local_path):
+                with open(local_path, 'wb') as f:
+                    pass
+        old_size = os.path.getsize(local_path)
         with open(local_path, 'r+b') as f:
             f.seek(offset)
             f.write(data)
 
-        new_local_size = os.path.getsize(local_path)
-        self.current_cache_size += (new_local_size - old_local_size)
-        self.cache.set_node(path, size=new_local_size, is_dir=False)
+        new_size = os.path.getsize(local_path)
+        self.current_cache_size += (new_size - old_size)
+        self.cache.set_node(path, size=new_size, is_dir=False)
         self._evict_cache_if_needed()
         return len(data)
+
 
     def utimens(self, path, times=None):
         attrs = self.cache.get_attrs(path)
