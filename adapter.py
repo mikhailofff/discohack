@@ -57,9 +57,8 @@ class YandexAdapter:
 
         return self._normalize_resource(response.json())
 
-    def read_file(self, path: str) -> bytes:
-        logger.info("Reading file %s", path)
-
+    def download_file(self, path: str, local_path: str) -> None:
+        logger.info("Streaming download for %s to %s", path, local_path)
         response = requests.get(
             self.download_url,
             headers=self.headers,
@@ -67,11 +66,14 @@ class YandexAdapter:
             timeout=self.default_timeout,
         )
         response.raise_for_status()
-
         href = response.json()["href"]
-        download_response = self.session.get(href, timeout=self.transfer_timeout)
-        download_response.raise_for_status()
-        return download_response.content
+        with self.session.get(href, stream=True, timeout=self.transfer_timeout) as r:
+            r.raise_for_status()
+            with open(local_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):  # по 1 МБ
+                    if chunk:
+                        f.write(chunk)
+                        f.flush()
 
     def create_file(self, path: str) -> None:
         logger.info("Creating empty file %s", path)

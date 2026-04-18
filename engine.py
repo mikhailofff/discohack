@@ -88,26 +88,32 @@ class CloudFUSE(fuse.Operations):
         local_path = self._get_cache_path(path)
         attrs = self.getattr(path)
         remote_size = attrs['st_size']
-        needs_download = not os.path.exists(local_path)
+        if remote_size > self.max_cache_size:
+            logger.error(f"File {path} is too large for cache ({remote_size} > {self.max_cache_size})")
+            raise fuse.FuseOSError(errno.EFBIG)
 
+        needs_download = not os.path.exists(local_path)
         if not needs_download:
             local_size = os.path.getsize(local_path)
             if local_size != remote_size and path not in self.dirty_files:
                 logger.info(f"CACHE INVALID: {path} changed in cloud")
                 needs_download = True
-
         if needs_download:
-            logger.info(f"DOWNLOADING: {path}...")
+            logger.info(f"DOWNLOADING (STREAM): {path}...")
             self.active_files.add(path)
             try:
-                data = self.adapter.read_file(path)
                 os.makedirs(os.path.dirname(local_path), exist_ok=True)
-                with open(local_path, 'wb') as f:
-                    f.write(data)
+                self.adapter.download_file(path, local_path)
+                downloaded_size = os.path.getsize(local_path)
+                self.current_cache_size += downloaded_size
                 self._evict_cache_if_needed()
+            except Exception as e:
+                logger.error(f"Download failed: {e}")
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+                raise fuse.FuseOSError(errno.EIO)
             finally:
                 self.active_files.remove(path)
-
         with open(local_path, 'rb') as f:
             f.seek(offset)
             return f.read(size)
@@ -123,7 +129,7 @@ class CloudFUSE(fuse.Operations):
                 base_content = b""
             else:
                 try:
-                    base_content = self.adapter.read_file(path)
+                    base_content = self.adapter.download_file(path, local_path)
                 except:
                     base_content = b""
             with open(local_path, 'wb') as f:
@@ -240,21 +246,23 @@ class CloudFUSE(fuse.Operations):
         parent = os.path.dirname(path)
         self.cache.set_directory_list(parent, None)
 
-    def _remove_from_parent_list(self, path):
-        parent = os.path.dirname(path)
-        self.cache.set_directory_list(parent, None)
-
     def _evict_cache_if_needed(self):
         if self.current_cache_size <= self.max_cache_size:
             return
-        logger.info(f"Cache cleanup triggered. Current: {self.current_cache_size}, Limit: {self.max_cache_size}")
+
+        logger.info(f"Cache cleanup triggered. Current: {self.current_cache_size}")
+
         files = []
         for root, _, filenames in os.walk(self.cache_dir):
             for f in filenames:
                 full_path = os.path.join(root, f)
+                # Относительный путь для проверки в сетах
                 rel_path = "/" + os.path.relpath(full_path, self.cache_dir).replace('\\', '/')
+
+                # КРИТИЧНО: Не удаляем то, что в работе или изменено
                 if rel_path in self.dirty_files or rel_path in self.active_files:
                     continue
+
                 try:
                     stat_info = os.stat(full_path)
                     files.append({
@@ -262,18 +270,17 @@ class CloudFUSE(fuse.Operations):
                         'size': stat_info.st_size,
                         'atime': stat_info.st_atime
                     })
-                except FileNotFoundError:
+                except:
                     continue
+
         files.sort(key=lambda x: x['atime'])
+
         for f in files:
             if self.current_cache_size <= self.max_cache_size:
                 break
-            try:
-                os.remove(f['path'])
-                self.current_cache_size -= f['size']
-                logger.info(f"Evicted: {f['path']} (freed {f['size']} bytes)")
-            except Exception as e:
-                logger.error(f"Failed to evict {f['path']}: {e}")
+            os.remove(f['path'])
+            self.current_cache_size -= f['size']
+            logger.info(f"Evicted: {f['path']}")
     def _calculate_initial_cache_size(self):
         total = 0
         for root, _, filenames in os.walk(self.cache_dir):
