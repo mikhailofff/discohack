@@ -2,6 +2,11 @@ import sys
 import webbrowser
 import requests
 import os
+import json # Добавить
+from PyQt6.QtWidgets import (
+    QApplication, QSystemTrayIcon, QMenu, QStyle, 
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton # Добавить эти
+)
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QStyle
 from PyQt6.QtGui import QAction
 from PyQt6.QtNetwork import QTcpServer, QHostAddress
@@ -11,7 +16,7 @@ CLIENT_ID = '4648a51ecff4419999228cdb14a168c4'
 CLIENT_SECRET = '249440f3331c493083ad045e1f92f814'
 REDIRECT_PORT = 8080
 # Файл сохранится в папке пользователя. Можно заменить на "token.txt" для локального хранения.
-TOKEN_FILE = os.path.expanduser("~/.alt_drive_token")
+TOKEN_FILE = os.path.expanduser("~/.alt_drive_config.json")
 
 class AuthServer(QTcpServer):
     def __init__(self, app_instance, parent=None):
@@ -122,6 +127,61 @@ class AuthServer(QTcpServer):
         except Exception as e:
             print(f"[ОШИБКА СЕТИ] Не удалось связаться с сервером: {e}")
 
+class SettingsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Настройки лимитов")
+        self.setFixedSize(300, 150)
+        
+        self.config_file = os.path.expanduser("~/.alt_drive_config.json")
+        
+        layout = QVBoxLayout()
+        
+        # Поле Кеша
+        cache_layout = QHBoxLayout()
+        cache_layout.addWidget(QLabel("Размер кеша (МБ):"))
+        self.cache_input = QLineEdit()
+        cache_layout.addWidget(self.cache_input)
+        layout.addLayout(cache_layout)
+        
+        # Поле Лимита
+        limit_layout = QHBoxLayout()
+        limit_layout.addWidget(QLabel("Лимит (МБ):"))
+        self.limit_input = QLineEdit()
+        limit_layout.addWidget(self.limit_input)
+        layout.addLayout(limit_layout)
+        
+        # Кнопка сохранения
+        self.save_btn = QPushButton("Сохранить")
+        self.save_btn.clicked.connect(self.save_settings)
+        layout.addWidget(self.save_btn)
+        
+        self.setLayout(layout)
+        self.load_settings()
+
+    def load_settings(self):
+        if os.path.exists(self.config_file):
+            try:
+                with open(self.config_file, "r") as f:
+                    data = json.load(f)
+                    self.cache_input.setText(str(data.get("cache_size", "")))
+                    self.limit_input.setText(str(data.get("limit_size", "")))
+            except Exception as e:
+                print(f"Ошибка загрузки настроек: {e}")
+
+    def save_settings(self):
+        data = {
+            "cache_size": self.cache_input.text(),
+            "limit_size": self.limit_input.text()
+        }
+        try:
+            with open(self.config_file, "w") as f:
+                json.dump(data, f)
+            print(f"[КОНФИГ] Настройки сохранены в {self.config_file}")
+            self.accept() # Закрыть окно
+        except Exception as e:
+            print(f"Ошибка сохранения: {e}")
+
 class CloudTrayApp:
     def __init__(self):
         self.qt_app = QApplication(sys.argv)
@@ -143,6 +203,9 @@ class CloudTrayApp:
         
         self.logout_act = QAction("Сбросить авторизацию", self.menu)
         self.logout_act.triggered.connect(self.logout)
+
+        self.settings_act = QAction("Параметры кеша", self.menu)
+        self.settings_act.triggered.connect(self.open_settings)
         
         self.exit_act = QAction("Выход", self.menu)
         self.exit_act.triggered.connect(sys.exit)
@@ -150,6 +213,7 @@ class CloudTrayApp:
         # Сборка меню
         self.menu.addAction(self.login_act)
         self.menu.addAction(self.logout_act)
+        self.menu.addAction(self.settings_act)
         self.menu.addSeparator()
         self.menu.addAction(self.exit_act)
         
@@ -194,6 +258,10 @@ class CloudTrayApp:
 
     def run(self):
         return self.qt_app.exec()
+    
+    def open_settings(self):
+        self.dialog = SettingsDialog()
+        self.dialog.show()
 
 if __name__ == "__main__":
     app = CloudTrayApp()
