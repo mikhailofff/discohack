@@ -28,6 +28,12 @@ def parse_limit_mb(raw_limit, default_mb=1024):
         return default_mb
 
 
+def normalize_fs_path(path_value):
+    if not path_value:
+        return path_value
+    return os.path.abspath(os.path.expanduser(path_value))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Yandex Disk FUSE Driver")
     parser.add_argument('mountpoint', type=str, help="Mount point directory")
@@ -43,8 +49,9 @@ def main():
     saved_config = load_config()
 
     token = args.token or saved_config.get('token')
-    cache_dir = args.cache or saved_config.get('cache', "~/.cache/yandex_cloud_fuse")
+    cache_dir = normalize_fs_path(args.cache or saved_config.get('cache', "~/.cache/yandex_cloud_fuse"))
     limit_mb = parse_limit_mb(args.limit or saved_config.get('limit', 1024))
+    mountpoint = normalize_fs_path(args.mountpoint)
 
     if not token:
         print("Ошибка: Токен не найден. Укажите его через --token при первом запуске.")
@@ -53,11 +60,9 @@ def main():
         'token': token,
         'cache': cache_dir,
         'limit': limit_mb,
-        'mountpoint': os.path.abspath(args.mountpoint),
+        'mountpoint': mountpoint,
     }
     save_config(new_config)
-    mountpoint = os.path.abspath(args.mountpoint)
-    cache_dir = os.path.expanduser(cache_dir)
     limit_bytes = limit_mb * 1024 * 1024
     print(f"Запуск с конфигом из {CONFIG_PATH}")
     print(f"Токен: {token[:5]}***{token[-5:]}")

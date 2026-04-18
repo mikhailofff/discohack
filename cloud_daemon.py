@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import signal
 from threading import Thread
+from urllib.parse import unquote, urlparse
 from pydbus import SessionBus
 from gi.repository import GLib
 import requests
@@ -75,8 +76,51 @@ class YandexUploader:
             params={"path": disk_path},
         )
         resp.raise_for_status()
-        public_url = resp.json().get("public_url")
+
+        metadata = requests.get(
+            self.base_url,
+            headers=self.headers,
+            params={"path": disk_path, "fields": "public_url"},
+        )
+        metadata.raise_for_status()
+        public_url = metadata.json().get("public_url")
+        if not public_url:
+            raise RuntimeError("Yandex Disk did not return public_url after publish")
         return public_url
+
+
+def normalize_local_path(file_path: str) -> str:
+    parsed = urlparse(file_path)
+    if parsed.scheme == "file":
+        normalized_path = unquote(parsed.path)
+    else:
+        normalized_path = file_path
+    return os.path.abspath(os.path.expanduser(normalized_path))
+
+
+def copy_to_clipboard(text: str) -> bool:
+    clipboard_commands = [
+        ("wl-copy", []),
+        ("xclip", ["-selection", "clipboard"]),
+        ("xsel", ["--clipboard", "--input"]),
+    ]
+
+    for binary_name, args in clipboard_commands:
+        binary = shutil.which(binary_name)
+        if not binary:
+            continue
+        try:
+            subprocess.run(
+                [binary, *args],
+                input=text,
+                text=True,
+                check=True,
+            )
+            return True
+        except Exception:
+            continue
+
+    return False
 
 class CloudService(object):
     dbus = """
@@ -104,6 +148,7 @@ class CloudService(object):
         self.uploader = YandexUploader(token)
 
     def HandleAction(self, action_type, file_path):
+        file_path = normalize_local_path(file_path)
         filename = os.path.basename(file_path)
         disk_path = f"/{filename}"
         notifier = shutil.which("notify-send")
@@ -121,8 +166,10 @@ class CloudService(object):
                 if notifier:
                     subprocess.Popen([notifier, "Cloud", f"Generating public URL for {filename}..."])
                 public_url = self.uploader.get_public_url(disk_path, file_path)
+                copied = copy_to_clipboard(public_url)
                 if notifier:
-                    subprocess.Popen([notifier, "Cloud", f"Public URL: {public_url}"])
+                    message = "Public URL copied to clipboard" if copied else public_url
+                    subprocess.Popen([notifier, "Cloud", message])
                 print(f"[OK] Public URL for {filename}: {public_url}")
 
         except Exception as e:

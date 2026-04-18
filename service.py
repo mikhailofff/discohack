@@ -50,6 +50,12 @@ def parse_limit_mb(raw_limit, default_mb=1024):
         return default_mb
 
 
+def normalize_fs_path(path_value):
+    if not path_value:
+        return path_value
+    return os.path.abspath(os.path.expanduser(path_value))
+
+
 class FuseProcessManager:
     def __init__(self):
         self.fuse_process = None
@@ -60,9 +66,9 @@ class FuseProcessManager:
 
     def start(self):
         config = readConfig()
-        mountpoint = config.get('mountpoint')
+        mountpoint = normalize_fs_path(config.get('mountpoint'))
         token = config.get('token')
-        cache_dir = config.get('cache')
+        cache_dir = normalize_fs_path(config.get('cache'))
         limit_mb = parse_limit_mb(config.get('limit'))
 
         if self.is_running():
@@ -325,8 +331,8 @@ class SettingsDialog(QDialog):
     def save_settings(self):
         config = readConfig()
         config.update({
-            "mountpoint": self.mountpoint_input.text(),
-            "cache": self.path_input.text(),
+            "mountpoint": normalize_fs_path(self.mountpoint_input.text()),
+            "cache": normalize_fs_path(self.path_input.text()),
             "limit": parse_limit_mb(self.limit_input.text())
         })
         writeConfig(config)
@@ -353,8 +359,8 @@ class CloudTrayApp:
 
         config = readConfig()
         config_updated = {
-            "mountpoint": args.mountpoint or config.get('mountpoint'),
-            "cache": args.cache or config.get('cache'),
+            "mountpoint": normalize_fs_path(args.mountpoint or config.get('mountpoint')),
+            "cache": normalize_fs_path(args.cache or config.get('cache')),
             "limit": parse_limit_mb(args.limit or config.get('limit')),
             "token": args.token or config.get('token', ''),
         }
