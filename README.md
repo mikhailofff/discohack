@@ -1,11 +1,13 @@
+Run daemon with `cloud_daemon.py`. To intergrate app with dolphin run sh script.
+
 Monitore bus in real-time \
 `dbus-monitor "destination=ru.hackathon.CloudService"`
 
 Send test method call \
 `dbus-send --session --print-reply --dest=ru.hackathon.CloudService /ru/hackathon/CloudService ru.hackathon.CloudService.HandleAction string:"upload" string:"/home/test.txt"`
-# AltDrive: Yandex Disk FUSE Client
+# AltCloud: Yandex Disk FUSE Client
 
-**AltDrive** — это производительный и функциональный клиент для Linux, позволяющий монтировать облачное хранилище Яндекс Диск как локальную файловую систему через FUSE. Приложение реализует концепцию «файлов по запросу»: структура облака видна сразу, но данные скачиваются только при обращении к ним.
+**AltCloud** — это производительный и функциональный клиент для Linux, позволяющий монтировать облачное хранилище Яндекс Диск как локальную файловую систему через FUSE. Приложение реализует концепцию «файлов по запросу»: структура облака видна сразу, но данные скачиваются только при обращении к ним.
 
 ---
 
