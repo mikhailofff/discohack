@@ -14,6 +14,7 @@ from PyQt6.QtGui import QAction
 from PyQt6.QtNetwork import QTcpServer, QHostAddress
 from PyQt6.QtCore import QThreadPool
 
+
 from fuse import FUSE
 from engine import CloudFUSE
 
@@ -41,9 +42,10 @@ def launch_engine():
     mountpoint = config.get('mountpoint')
     token = config.get('token')
     cache_dir = config.get('cache')
-    limit_bytes = config.get('limit') * 1024 * 1024 * 1024
-    print(f"Запуск с конфигом из {CONFIG_FILE}")
-    print(f"Токен: {token[:5]}***{token[-5:]}")
+    limit_bytes = int(config.get('limit'))
+    limit_bytes *= 1024 * 1024 * 1024
+   # print(f"Запуск с конфигом из {CONFIG_FILE}")
+   # print(f"Токен: {token[:5]}***{token[-5:]}")
     model = CloudFUSE(token=token, cache_dir=cache_dir, max_cache_size=limit_bytes)
     FUSE(model, mountpoint, foreground=True, nothreads=True, nonempty=True)
 
@@ -167,6 +169,8 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(400)
 
         layout = QVBoxLayout()
+
+        print(f"Инициализация трея в процессе: {os.getpid()}, ID объекта: {id(self)}")
 
 
         # --- Секция выбора mountpoint ---
