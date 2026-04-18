@@ -26,7 +26,6 @@ class CloudFUSE(fuse.Operations):
         self.current_cache_size = self._calculate_initial_cache_size()
         self.cache.set_node('/', 4096, is_dir=True)
 
-        # Первичный листинг корня
         try:
             files = self.adapter.listdir('/')
             file_names = []
