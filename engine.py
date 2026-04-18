@@ -233,3 +233,14 @@ class CloudFUSE(fuse.Operations):
                     logger.info(f"Evicted from cache: {f['path']}")
                 except Exception as e:
                     logger.error(f"Failed to evict {f['path']}: {e}")
+
+    def statfs(self, path):
+        return {
+            'f_bsize': 4096,
+            'f_blocks': 100000000,
+            'f_bfree': 50000000,
+            'f_bavail': 50000000,
+            'f_files': 1000000,
+            'f_ffree': 1000000,
+            'f_namemax': 255
+        }
