@@ -12,12 +12,13 @@ logger = logging.getLogger("Engine")
 
 
 class CloudFUSE(fuse.Operations):
-    def __init__(self):
-        self.adapter = adapter.get_adapter()
+    def __init__(self, token, cache_dir, max_cache_size):
+        self.adapter = adapter.get_adapter(token)
         self.cache = MetadataCache()
-        self.cache_dir = os.path.expanduser("~/.cache/yandex_cloud_fuse")
+        self.cache_dir = cache_dir
+        self.max_cache_size = max_cache_size
         self.active_files = set()
-        self.max_cache_size = 1 * 1024 * 1024 * 1024
+        self.dirty_files = set()
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
 
