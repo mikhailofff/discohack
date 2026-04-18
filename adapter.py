@@ -26,7 +26,7 @@ class YandexAdapter:
         self.session = self._build_session()
 
     def listdir(self, path: str) -> list[dict]:
-        logger.info("Fetching directory listing for %s", path)
+        logger.debug("Fetching directory listing for %s", path)
 
         response = self.session.get(
             self.resource_url,
@@ -45,7 +45,7 @@ class YandexAdapter:
         return [self._normalize_resource(item) for item in items]
 
     def get_metadata(self, path: str) -> dict:
-        logger.info("Fetching metadata for %s", path)
+        logger.debug("Fetching metadata for %s", path)
 
         response = self.session.get(
             self.resource_url,
@@ -58,7 +58,7 @@ class YandexAdapter:
         return self._normalize_resource(response.json())
 
     def download_file(self, path: str, local_path: str) -> None:
-        logger.info("Streaming download for %s to %s", path, local_path)
+        logger.info("Streaming download for %s", path)
         response = self.session.get(
             self.download_url,
             headers=self.headers,
@@ -142,7 +142,7 @@ class YandexAdapter:
         response.raise_for_status()
 
     def get_disk_info(self) -> dict:
-        logger.info("Fetching disk info")
+        logger.debug("Fetching disk info")
 
         response = self.session.get(
             self.base_url,
@@ -166,7 +166,7 @@ class YandexAdapter:
         return self.get_public_info(path)
 
     def get_public_link(self, path: str) -> str:
-        logger.info("Fetching public link for %s", path)
+        logger.debug("Fetching public link for %s", path)
 
         public_info = self.get_public_info(path)
         public_url = public_info.get("public_url")
@@ -175,15 +175,12 @@ class YandexAdapter:
         return public_url
 
     def get_public_info(self, path: str) -> dict:
-        logger.info("Fetching public info for %s", path)
+        logger.debug("Fetching public info for %s", path)
 
         response = self.session.get(
             self.resource_url,
             headers=self.headers,
-            params={
-                "path": self._disk_path(path),
-                "fields": "name,path,type,size,public_key,public_url",
-            },
+            params={"path": self._disk_path(path)},
             timeout=self.default_timeout,
         )
         response.raise_for_status()

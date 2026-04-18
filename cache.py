@@ -3,12 +3,10 @@ import stat
 import logging
 import os
 
-
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Cache")
 
 class MetadataCache:
-    def __init__(self, dir_ttl=10, file_ttl=300):
+    def __init__(self, dir_ttl=300, file_ttl=3600):
         self.dir_ttl = dir_ttl
         self.file_ttl = file_ttl
         self._nodes = {}
@@ -34,16 +32,16 @@ class MetadataCache:
             'attrs': attrs,
             'expires': time.time() + self.file_ttl
         }
-        logger.info(f"SET node cache: {path}")
+        logger.debug("SET node cache: %s", path)
 
     def get_attrs(self, path):
         node = self._nodes.get(path)
         if node and time.time() < node['expires']:
-            logger.info(f"GET node cache (HIT): {path}")
+            logger.debug("GET node cache (HIT): %s", path)
             return node['attrs']
 
         if node:
-            logger.info(f"GET node cache (EXPIRED): {path}")
+            logger.debug("GET node cache (EXPIRED): %s", path)
             del self._nodes[path]
         return None
 
@@ -52,16 +50,16 @@ class MetadataCache:
             'names': file_names,
             'expires': time.time() + self.dir_ttl
         }
-        logger.info(f"SET dir list cache: {path}")
+        logger.debug("SET dir list cache: %s", path)
 
     def get_directory_list(self, path):
         content = self._directory_contents.get(path)
         if content and time.time() < content['expires']:
-            logger.info(f"GET dir list cache (HIT): {path}")
+            logger.debug("GET dir list cache (HIT): %s", path)
             return content['names']
 
         if content:
-            logger.info(f"GET dir list cache (EXPIRED): {path}")
+            logger.debug("GET dir list cache (EXPIRED): %s", path)
             del self._directory_contents[path]
         return None
 
@@ -69,10 +67,14 @@ class MetadataCache:
         self._nodes.pop(path, None)
         parent = os.path.dirname(path)
         self._directory_contents.pop(parent, None)
-        logger.info(f"INVALIDATE: {path}")
+        logger.debug("INVALIDATE: %s", path)
+
+    def invalidate_directory(self, path):
+        self._directory_contents.pop(path, None)
+        logger.debug("INVALIDATE DIR: %s", path)
 
     def remove_node(self, path):
         self._nodes.pop(path, None)
         parent = os.path.dirname(path)
         self._directory_contents.pop(parent, None)
-        logger.info(f"CACHE REMOVE NODE: {path}")
+        logger.debug("CACHE REMOVE NODE: %s", path)

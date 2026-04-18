@@ -14,10 +14,10 @@ logger = logging.getLogger("Engine")
 class CloudFUSE(fuse.Operations):
     def __init__(self, token, cache_dir, max_cache_size):
         self.adapter = adapter.get_adapter(token)
-        self.cache = MetadataCache()
+        self.cache = MetadataCache(dir_ttl=300, file_ttl=3600)
         self.cache_dir = cache_dir
         self.max_cache_size = max_cache_size
-        self.local_cache_ttl = 60
+        self.local_cache_ttl = 900
         self.eviction_slack = 64 * 1024 * 1024
         self.active_files = set()
         self.dirty_files = set()
@@ -25,6 +25,7 @@ class CloudFUSE(fuse.Operations):
         self.current_cache_size = self._calculate_initial_cache_size()
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
+        self._restore_local_cache_state()
 
         self.cache.set_node('/', 4096, is_dir=True)
 
@@ -42,6 +43,21 @@ class CloudFUSE(fuse.Operations):
 
     def _get_cache_path(self, path):
         return os.path.join(self.cache_dir, path.lstrip('/'))
+
+    def _restore_local_cache_state(self):
+        now = time.time()
+        for root, _, filenames in os.walk(self.cache_dir):
+            for filename in filenames:
+                full_path = os.path.join(root, filename)
+                rel_path = "/" + os.path.relpath(full_path, self.cache_dir).replace('\\', '/')
+                try:
+                    size = os.path.getsize(full_path)
+                except OSError:
+                    continue
+                self.local_cache_state[rel_path] = {
+                    'size': size,
+                    'expires': now + self.local_cache_ttl,
+                }
 
     def _mark_local_cache_fresh(self, path, size=None):
         if size is None:
@@ -62,6 +78,9 @@ class CloudFUSE(fuse.Operations):
         if not os.path.exists(local_path):
             self.local_cache_state.pop(path, None)
             return None
+        if state['size'] != os.path.getsize(local_path):
+            self.local_cache_state.pop(path, None)
+            return None
         return local_path
 
     def statfs(self, path):
@@ -80,15 +99,25 @@ class CloudFUSE(fuse.Operations):
         if basename in ['.directory', '.hidden', '.Trash', '.Trash-1000', 'autorun.inf']:
             raise fuse.FuseOSError(errno.ENOENT)
 
+        if path == '/':
+            self.cache.set_node('/', 4096, is_dir=True)
+            return self.cache.get_attrs('/')
+
         attrs = self.cache.get_attrs(path)
         if attrs:
             return attrs
+
+        local_path = self._get_fresh_local_path(path)
+        if local_path is not None:
+            size = os.path.getsize(local_path)
+            self.cache.set_node(path, size=size, is_dir=False)
+            return self.cache.get_attrs(path)
 
         try:
             metadata = self.adapter.get_metadata(path)
             self.cache.set_node(path, size=metadata['size'], is_dir=metadata.get('is_dir', False))
             return self.cache.get_attrs(path)
-        except:
+        except Exception:
             raise fuse.FuseOSError(errno.ENOENT)
 
     def readdir(self, path, fh):
@@ -111,6 +140,7 @@ class CloudFUSE(fuse.Operations):
     def read(self, path, size, offset, fh):
         local_path = self._get_fresh_local_path(path)
         if local_path is not None:
+            self._touch_local_cache(path)
             with open(local_path, 'rb') as f:
                 f.seek(offset)
                 return f.read(size)
@@ -147,6 +177,7 @@ class CloudFUSE(fuse.Operations):
                 self.active_files.remove(path)
         else:
             self._mark_local_cache_fresh(path, os.path.getsize(local_path))
+            self._touch_local_cache(path)
         with open(local_path, 'rb') as f:
             f.seek(offset)
             return f.read(size)
@@ -267,7 +298,8 @@ class CloudFUSE(fuse.Operations):
         if os.path.exists(old_local):
             os.makedirs(os.path.dirname(new_local), exist_ok=True)
             os.rename(old_local, new_local)
-            self.local_cache_state[new] = self.local_cache_state.pop(old, {})
+            if old in self.local_cache_state:
+                self.local_cache_state[new] = self.local_cache_state.pop(old)
 
         attrs = self.cache.get_attrs(old)
         if attrs:
@@ -279,9 +311,19 @@ class CloudFUSE(fuse.Operations):
         self._remove_from_parent_list(old)
         self._add_to_parent_list(new)
         return 0
+
     def _add_to_parent_list(self, path):
         parent = os.path.dirname(path)
-        self.cache.set_directory_list(parent, None)
+        self.cache.invalidate_directory(parent or '/')
+
+    def _remove_from_parent_list(self, path):
+        parent = os.path.dirname(path)
+        self.cache.invalidate_directory(parent or '/')
+
+    def _touch_local_cache(self, path):
+        state = self.local_cache_state.get(path)
+        if state:
+            state['expires'] = time.time() + self.local_cache_ttl
 
     def _evict_cache_if_needed(self):
         if self.current_cache_size <= self.max_cache_size + self.eviction_slack:
