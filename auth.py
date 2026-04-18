@@ -12,12 +12,10 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QAction
 from PyQt6.QtNetwork import QTcpServer, QHostAddress
 
-# --- НАСТРОЙКИ ---
 CLIENT_ID = '4648a51ecff4419999228cdb14a168c4'
 CLIENT_SECRET = '249440f3331c493083ad045e1f92f814'
 REDIRECT_PORT = 8080
 TOKEN_FILE = os.path.expanduser("~/.alt_drive_config.json")
-# Путь к точке монтирования (можно вынести в настройки)
 MOUNT_POINT = os.path.expanduser("~/Cloud")
 
 class AuthServer(QTcpServer):
@@ -86,7 +84,6 @@ class CloudTrayApp:
         self.refresh_ui()
 
     def start_fuse_daemon(self, token):
-        """Запуск ./test_fuse.py как подпроцесса"""
         if self.fuse_process:
             self.stop_fuse_daemon()
         
@@ -103,7 +100,6 @@ class CloudTrayApp:
         print(f"[FUSE] Started on {MOUNT_POINT}")
 
     def stop_fuse_daemon(self):
-        """Остановка демона и размонтирование"""
         if self.fuse_process:
             self.fuse_process.terminate()
             self.fuse_process = None
