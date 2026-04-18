@@ -5,6 +5,7 @@ import logging
 import adapter
 import stat
 import shutil
+import time
 from cache import MetadataCache
 
 logging.basicConfig(level=logging.INFO)
@@ -87,6 +88,10 @@ class CloudFUSE(fuse.Operations):
 
     def read(self, path, size, offset, fh):
         local_path = self._get_cache_path(path)
+        wait_limit = 30
+        while path in self.active_files and wait_limit > 0:
+            time.sleep(0.5)
+            wait_limit -= 0.5
         attrs = self.getattr(path)
         remote_size = attrs['st_size']
 
@@ -98,12 +103,9 @@ class CloudFUSE(fuse.Operations):
                 needs_download = True
 
         if needs_download:
-            # 1. Защита: файл больше всего кэша
             if remote_size > self.max_cache_size:
                 logger.error(f"File {path} exceeds max cache size")
                 raise fuse.FuseOSError(errno.EFBIG)
-
-            # 2. Освобождаем место ДО загрузки
             self._make_room(remote_size)
 
             logger.info(f"DOWNLOADING (STREAM): {path}...")
@@ -271,10 +273,14 @@ class CloudFUSE(fuse.Operations):
         return total
 
     def _make_room(self, required_size):
+        # Если файл сам по себе больше лимита - даже не пытаемся
+        if required_size > self.max_cache_size:
+            return
+
         while (self.current_cache_size + required_size) > self.max_cache_size:
             evicted_size = self._evict_one_oldest()
             if evicted_size == 0:
-                logger.warning("Cache is full of active/dirty files. Cannot free more space.")
+                # Больше нечего удалять (всё нужное или грязное)
                 break
 
     def _evict_one_oldest(self):
@@ -283,26 +289,22 @@ class CloudFUSE(fuse.Operations):
             for f in filenames:
                 full_path = os.path.join(root, f)
                 rel_path = "/" + os.path.relpath(full_path, self.cache_dir).replace('\\', '/')
-
                 if rel_path in self.dirty_files or rel_path in self.active_files:
                     continue
+
                 try:
                     stat_info = os.stat(full_path)
                     files.append((full_path, stat_info.st_size, stat_info.st_atime))
                 except:
                     continue
-
-        if not files:
-            return 0
-
+        if not files: return 0
         path_to_remove, size_to_remove, _ = min(files, key=lambda x: x[2])
         try:
             os.remove(path_to_remove)
             self.current_cache_size -= size_to_remove
-            logger.info(f"Evicted: {path_to_remove} ({size_to_remove} bytes)")
+            logger.info(f"EVICTED: {path_to_remove}")
             return size_to_remove
-        except Exception as e:
-            logger.error(f"Failed to evict {path_to_remove}: {e}")
+        except:
             return 0
 
     def _evict_cache_if_needed(self):
