@@ -3,6 +3,7 @@ import json
 import shutil
 import subprocess
 import signal
+import tkinter as tk
 from threading import Thread
 from urllib.parse import unquote, urlparse
 from pydbus import SessionBus
@@ -120,7 +121,16 @@ def copy_to_clipboard(text: str) -> bool:
         except Exception:
             continue
 
-    return False
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.clipboard_clear()
+        root.clipboard_append(text)
+        root.update()
+        root.destroy()
+        return True
+    except Exception:
+        return False
 
 class CloudService(object):
     dbus = """
