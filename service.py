@@ -8,10 +8,11 @@ import requests
 from PyQt6.QtWidgets import (
     QApplication, QSystemTrayIcon, QMenu, QStyle,
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QFileDialog # Добавлен QFileDialog
+    QLineEdit, QPushButton, QFileDialog
 )
 from PyQt6.QtGui import QAction
 from PyQt6.QtNetwork import QTcpServer, QHostAddress
+from PyQt6.QtCore import QThreadPool
 
 from fuse import FUSE
 from engine import CloudFUSE
@@ -19,27 +20,34 @@ from engine import CloudFUSE
 CLIENT_ID = '4648a51ecff4419999228cdb14a168c4'
 CLIENT_SECRET = '249440f3331c493083ad045e1f92f814'
 REDIRECT_PORT = 8080
-config_file = os.path.expanduser("~/.cloud_bridge_config.json")
-#os.path.expanduser("~/.cloud_bridge_config.json")
+CONFIG_FILE = os.path.expanduser("~/.cloud_bridge_config.json")
 
 
 def readConfig():
-    if os.path.exists(config_file):
-        with open(config_file, 'r') as f:
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as f:
             return json.load(f)
     return {}
 
 def writeConfig(config):
-    print(config_file)
-    with open(config_file, 'w') as f:
+    print(CONFIG_FILE)
+    with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=4)
         return
- #   else:
- #       new_config = {
- #           'token': token,
- #           'cache': cache_dir,
-#            'limit': limit_gb
-#        }
+
+def launch_engine():
+    print('Engine launched')
+    config = readConfig()
+    mountpoint = config.get('mountpoint')
+    token = config.get('token')
+    cache_dir = config.get('cache')
+    limit_bytes = config.get('limit') * 1024 * 1024 * 1024
+    print(f"Запуск с конфигом из {CONFIG_FILE}")
+    print(f"Токен: {token[:5]}***{token[-5:]}")
+    model = CloudFUSE(token=token, cache_dir=cache_dir, max_cache_size=limit_bytes)
+    FUSE(model, mountpoint, foreground=True, nothreads=True, nonempty=True)
+
+thread_pool = QThreadPool.globalInstance()
 
 class AuthServer(QTcpServer):
     def __init__(self, app_instance, parent=None):
@@ -137,26 +145,7 @@ class AuthServer(QTcpServer):
                 print(f"[УСПЕХ] Новый токен получен и сохранен: {token}")
                 print("-" * 40)
 
-                #########
-
-               # token = args.token or saved_config.get('token')
-               # cache_dir = args.cache or saved_config.get('cache', "~/.cache/yandex_cloud_fuse")
-               # limit_gb = args.limit or saved_config.get('limit', 1)
-               # new_config = {
-               #     'token': token,
-               #     'cache': cache_dir,
-               #    'limit': limit_gb
-               # }
-               # save_config(new_config)
-                mountpoint = '/home/ad/cloud'
-                cache_dir = config.get('cache')
-                limit_bytes = limit_gb * 1024 * 1024 * 1024
-                print(f"Запуск с конфигом из {config_file}")
-                print(f"Токен: {token[:5]}***{token[-5:]}")
-                model = CloudFUSE(token=token, cache_dir=cache_dir, max_cache_size=limit_bytes)
-                FUSE(model, mountpoint, foreground=True, nothreads=True, nonempty=True)
-
-                #########
+                thread_pool.start(launch_engine)
 
                 # Обновляем интерфейс
                 self.app_instance.refresh_ui()
@@ -178,6 +167,26 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(400)
 
         layout = QVBoxLayout()
+
+
+        # --- Секция выбора mountpoint ---
+        layout.addWidget(QLabel("mountpoint:"))
+        mountpoint_layout = QHBoxLayout()
+
+        self.mountpoint_input = QLineEdit()
+        self.mountpoint_input.setPlaceholderText("Выберите папку...")
+
+        # Кнопка с иконкой папки из стандартного стиля системы
+        self.select_mountpoint_btn = QPushButton()
+        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        self.select_mountpoint_btn.setIcon(icon)
+        self.select_mountpoint_btn.setToolTip("Выбрать папку в проводнике")
+        self.select_mountpoint_btn.clicked.connect(self.browse_mountpoint)
+
+        mountpoint_layout.addWidget(self.mountpoint_input)
+        mountpoint_layout.addWidget(self.select_mountpoint_btn)
+        layout.addLayout(mountpoint_layout)
+
 
         # --- Секция выбора пути ---
         layout.addWidget(QLabel("Путь к папке кеша:"))
@@ -219,18 +228,26 @@ class SettingsDialog(QDialog):
         if directory:
             self.path_input.setText(directory)
 
+    def browse_mountpoint(self):
+        # Открываем диалог выбора директории
+        directory = QFileDialog.getExistingDirectory(self, "Выберите папку для cloud")
+        if directory:
+            self.mountpoint_input.setText(directory)
+
     def load_settings(self):
         config = readConfig()
         self.path_input.setText(config.get("cache", ""))
         self.limit_input.setText(str(config.get("limit", "")))
+        self.mountpoint_input.setText(str(config.get("mountpoint", "")))
 
     def save_settings(self):
         config = {
+            "mountpoint": self.mountpoint_input.text(),
             "cache": self.path_input.text(),
             "limit": self.limit_input.text()
         }
         writeConfig(config)
-        print(f"[КОНФИГ] Настройки сохранены в {config_file}")
+        print(f"[КОНФИГ] Настройки сохранены в {CONFIG_FILE}")
         self.accept()
 
 class CloudTrayApp:
@@ -246,8 +263,16 @@ class CloudTrayApp:
         parser.add_argument('--config','-cf', type=str, help="Path to config file")
         args = parser.parse_args()
 
-        global config_file
-        config_file = args.config or config_file
+        global CONFIG_FILE
+        CONFIG_FILE = args.config or CONFIG_FILE
+
+        config = readConfig()
+        config_updated = {
+            "mountpoint": args.mountpoint or config.get('mountpoint'),
+            "cache": args.cache or config.get('cache'),
+            "limit": args.limit or config.get('limit')
+        }
+        writeConfig(config)
 
         # Инициализация сервера
         self.server = AuthServer(self)
@@ -272,18 +297,10 @@ class CloudTrayApp:
         self.exit_act = QAction("Выход", self.menu)
         self.exit_act.triggered.connect(sys.exit)
 
-        self.launch_engine_act = QAction('Запуск FUSE engine')
-        self.launch_engine_act.triggered.connect(self.launch_engine)
-
-        self.kill_engine_act = QAction('Kill FUSE engine')
-        self.kill_engine_act.triggered.connect(self.kill_engine)
-
         # Сборка меню
         self.menu.addAction(self.login_act)
         self.menu.addAction(self.logout_act)
         self.menu.addAction(self.settings_act)
-        self.menu.addAction(self.launch_engine_act)
-        self.menu.addAction(self.kill_engine_act)
         self.menu.addSeparator()
         self.menu.addAction(self.exit_act)
 
@@ -291,8 +308,10 @@ class CloudTrayApp:
         self.tray.show()
 
         # Первичная проверка при запуске
-        self.refresh_ui()
 
+        if (self.refresh_ui()):
+            print('ready')
+            thread_pool.start(launch_engine)
 
     def refresh_ui(self):
         """Проверяет токен и настраивает видимость кнопок"""
@@ -303,21 +322,12 @@ class CloudTrayApp:
             self.login_act.setVisible(False)
             self.logout_act.setVisible(True)
             print(f"[СТАТУС] Авторизован. Токен: {token[:15]}...")
-
-
-           # mountpoint = '/home/ad/cloud'
-           # cache_dir = config.get('cache')
-           # limit_bytes = config.get('limit') * 1024 * 1024 * 1024
-           # print(f"Запуск с конфигом из {config_file}")
-           # print(f"Токен: {token[:5]}***{token[-5:]}")
-           # model = CloudFUSE(token=token, cache_dir=cache_dir, max_cache_size=limit_bytes)
-           # FUSE(model, mountpoint, foreground=True, nothreads=True, nonempty=True)
-
-            return
+            return True
 
         self.login_act.setVisible(True)
         self.logout_act.setVisible(False)
         print("[СТАТУС] Требуется вход.")
+        return False
 
     def open_browser(self):
         url = f"https://oauth.yandex.ru/authorize?response_type=code&client_id={CLIENT_ID}"
@@ -326,6 +336,7 @@ class CloudTrayApp:
     def logout(self):
         config = readConfig()
         config["token"] = ''
+        writeConfig(config)
         print("[!] Авторизация удалена пользователем.")
         self.refresh_ui()
         self.tray.showMessage("Яндекс.Диск", "Сессия сброшена.", QSystemTrayIcon.MessageIcon.Information)
@@ -336,23 +347,6 @@ class CloudTrayApp:
     def open_settings(self):
         self.dialog = SettingsDialog()
         self.dialog.show()
-
-
-    def launch_engine(self):
-        print("debug")
-        config = readConfig()
-
-        mountpoint = '/home/ad/cloud'
-        token = config.get('token')
-        cache_dir = config.get('cache')
-        limit_bytes = config.get('limit') * 1024 * 1024 * 1024
-        print(f"Запуск с конфигом из {config_file}")
-        print(f"Токен: {token[:5]}***{token[-5:]}")
-        model = CloudFUSE(token=token, cache_dir=cache_dir, max_cache_size=limit_bytes)
-        FUSE(model, mountpoint, foreground=True, nothreads=True, nonempty=True)
-
-    def kill_engine(self):
-        print("KILL YOURSELF NOW")
 
 if __name__ == '__main__':
     app = CloudTrayApp()
