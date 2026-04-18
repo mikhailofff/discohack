@@ -27,7 +27,6 @@ class AuthServer(QTcpServer):
             client.waitForReadyRead(2000)
             raw_data = client.readAll().data().decode()
             
-            # Игнорируем лишние запросы
             if "favicon.ico" in raw_data or "code=" not in raw_data:
                 client.disconnectFromHost()
                 return
@@ -43,30 +42,39 @@ class AuthServer(QTcpServer):
                 response = (
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
                     "Connection: close\r\n\r\n"
-                    "<html><body><h2>Успешно!</h2></body></html>"
+                    "<html><body><h2>Успешно! Теперь вы можете закрыть это окно.</h2></body></html>"
                 )
                 client.write(response.encode())
                 client.flush()
+                # Даем время на отправку ответа перед закрытием сокета
+                client.waitForBytesWritten(1000)
+                client.disconnectFromHost()
+                
+                # Обмен токена
                 self.exchange_code_for_token(code)
-            except Exception:
-                pass
-            
-            client.waitForBytesWritten(1000)
-            client.disconnectFromHost()
+            except Exception as e:
+                print(f"Ошибка парсинга кода: {e}")
+                client.disconnectFromHost()
 
     def exchange_code_for_token(self, code):
         url = "https://oauth.yandex.ru/token"
-        data = {'grant_type': 'authorization_code', 'code': code, 'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET}
+        data = {
+            'grant_type': 'authorization_code', 
+            'code': code, 
+            'client_id': CLIENT_ID, 
+            'client_secret': CLIENT_SECRET
+        }
         try:
             r = requests.post(url, data=data)
             token = r.json().get('access_token')
             if token:
                 with open(TOKEN_FILE, "w") as f:
                     f.write(token)
-                print(f"Получен ключ: {token}")
-                # Вызываем обновление UI
+                print(f"Авторизация успешна. Токен сохранен.")
+                # Обновляем интерфейс
                 self.app_instance.refresh_ui()
-                QMessageBox.information(None, "Успех", "Авторизация прошла успешно!")
+                # Показываем уведомление (используем системный трей для неблокирующего вывода)
+                self.app_instance.tray.showMessage("Успех", "Авторизация прошла успешно!", QSystemTrayIcon.MessageIcon.Information)
         except Exception as e:
             print(f"Ошибка сети: {e}")
 
@@ -79,10 +87,10 @@ class CloudTrayApp:
         icon = self.qt_app.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon)
         self.tray = QSystemTrayIcon(icon)
         
-        # Создаем ОДНО меню на все время работы
         self.menu = QMenu()
+        # ПОДКЛЮЧАЕМ СИГНАЛ: обновлять видимость кнопок ПЕРЕД показом меню
+        self.menu.aboutToShow.connect(self.refresh_ui)
         
-        # Создаем действия (кнопки)
         self.login_act = QAction("Войти в Диск", self.menu)
         self.login_act.triggered.connect(self.open_browser)
         
@@ -92,7 +100,6 @@ class CloudTrayApp:
         self.exit_act = QAction("Выход", self.menu)
         self.exit_act.triggered.connect(sys.exit)
         
-        # Добавляем их в меню (порядок важен)
         self.menu.addAction(self.login_act)
         self.menu.addAction(self.logout_act)
         self.menu.addSeparator()
@@ -101,24 +108,20 @@ class CloudTrayApp:
         self.tray.setContextMenu(self.menu)
         self.tray.show()
         
-        # Первичная настройка видимости
         self.refresh_ui()
 
     def refresh_ui(self):
-        """Прячет или показывает нужные кнопки в зависимости от наличия токена"""
+        """Механически переключает видимость пунктов меню"""
         has_token = os.path.exists(TOKEN_FILE)
         
+        # Инвертируем видимость в зависимости от токена
+        self.login_act.setVisible(not has_token)
+        self.logout_act.setVisible(has_token)
+        
         if has_token:
-            self.login_act.setVisible(False)
-            self.logout_act.setVisible(True)
-            try:
-                with open(TOKEN_FILE, "r") as f:
-                    print(f"Получен ключ: {f.read().strip()}")
-            except: pass
+            print("Статус: Авторизован")
         else:
-            self.login_act.setVisible(True)
-            self.logout_act.setVisible(False)
-            print("Ключ не найден. Режим входа.")
+            print("Статус: Требуется вход")
 
     def open_browser(self):
         url = f"https://oauth.yandex.ru/authorize?response_type=code&client_id={CLIENT_ID}"
@@ -127,9 +130,8 @@ class CloudTrayApp:
     def logout(self):
         if os.path.exists(TOKEN_FILE):
             os.remove(TOKEN_FILE)
-            print("Авторизация сброшена.")
             self.refresh_ui()
-            QMessageBox.information(None, "Инфо", "Авторизация удалена.")
+            self.tray.showMessage("Инфо", "Авторизация удалена.", QSystemTrayIcon.MessageIcon.Information)
 
     def run(self):
         return self.qt_app.exec()
