@@ -70,3 +70,9 @@ class MetadataCache:
         parent = os.path.dirname(path)
         self._directory_contents.pop(parent, None)
         logger.info(f"INVALIDATE: {path}")
+
+    def remove_node(self, path):
+        self._nodes.pop(path, None)
+        parent = os.path.dirname(path)
+        self._directory_contents.pop(parent, None)
+        logger.info(f"CACHE REMOVE NODE: {path}")

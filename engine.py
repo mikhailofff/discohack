@@ -41,12 +41,10 @@ class CloudFUSE(fuse.Operations):
     def _get_cache_path(self, path):
         return os.path.join(self.cache_dir, path.lstrip('/'))
 
-    # ИЗМЕНЕНИЕ: Добавлен метод statfs, чтобы Dolphin видел свободное место
-    # и не выдавал ошибку "Not enough space"
     def statfs(self, path):
         return {
             'f_bsize': 4096,
-            'f_blocks': 100000000,  # Имитируем большой диск
+            'f_blocks': 100000000,
             'f_bfree': 50000000,
             'f_bavail': 50000000,
             'f_files': 1000000,
@@ -176,10 +174,21 @@ class CloudFUSE(fuse.Operations):
         local_path = self._get_cache_path(path)
         if os.path.exists(local_path):
             os.remove(local_path)
+        if hasattr(self.cache, 'remove_node'):
+            self.cache.remove_node(path)
         self._remove_from_parent_list(path)
         return 0
 
-    # ИЗМЕНЕНИЕ: В rename добавлена очистка кэша нод и принудительный сброс списков
+    def rmdir(self, path):
+        logger.info(f"RMDIR: {path}")
+        self.adapter.delete(path)
+
+        if hasattr(self.cache, 'remove_node'):
+            self.cache.remove_node(path)
+
+        self._remove_from_parent_list(path)
+        return 0
+
     def rename(self, old, new):
         logger.info(f"RENAME: {old} -> {new}")
         self.adapter.move(old, new)
@@ -194,21 +203,16 @@ class CloudFUSE(fuse.Operations):
         if attrs:
             is_dir = stat.S_ISDIR(attrs['st_mode'])
             self.cache.set_node(new, size=attrs['st_size'], is_dir=is_dir)
-            # Если в твоем MetadataCache есть метод удаления, стоит вызвать:
-            # self.cache.remove_node(old)
+        if hasattr(self.cache, 'remove_node'):
+            self.cache.remove_node(old)
 
-        # Сбрасываем кэш списков обеих директорий
         self._remove_from_parent_list(old)
         self._add_to_parent_list(new)
         return 0
-
-    # ИЗМЕНЕНИЕ: Метод теперь просто инвалидирует кэш родителя (ставит None)
-    # Это гарантирует, что при следующем просмотре папки список будет актуальным
     def _add_to_parent_list(self, path):
         parent = os.path.dirname(path)
         self.cache.set_directory_list(parent, None)
 
-    # ИЗМЕНЕНИЕ: Аналогично — сброс в None для надежности при Drag-and-Drop
     def _remove_from_parent_list(self, path):
         parent = os.path.dirname(path)
         self.cache.set_directory_list(parent, None)
