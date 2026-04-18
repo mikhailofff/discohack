@@ -2,12 +2,12 @@ import sys
 import webbrowser
 import requests
 import os
-import json # Добавить
+import json
 from PyQt6.QtWidgets import (
     QApplication, QSystemTrayIcon, QMenu, QStyle, 
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton # Добавить эти
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+    QLineEdit, QPushButton, QFileDialog # Добавлен QFileDialog
 )
-from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QStyle
 from PyQt6.QtGui import QAction
 from PyQt6.QtNetwork import QTcpServer, QHostAddress
 
@@ -130,55 +130,73 @@ class AuthServer(QTcpServer):
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Настройки лимитов")
-        self.setFixedSize(300, 150)
+        self.setWindowTitle("Настройки хранилища")
+        self.setMinimumWidth(400)
         
         self.config_file = os.path.expanduser("~/.alt_drive_config.json")
         
         layout = QVBoxLayout()
         
-        # Поле Кеша
-        cache_layout = QHBoxLayout()
-        cache_layout.addWidget(QLabel("Размер кеша (МБ):"))
-        self.cache_input = QLineEdit()
-        cache_layout.addWidget(self.cache_input)
-        layout.addLayout(cache_layout)
+        # --- Секция выбора пути ---
+        layout.addWidget(QLabel("Путь к папке кеша:"))
+        path_layout = QHBoxLayout()
         
-        # Поле Лимита
+        self.path_input = QLineEdit()
+        self.path_input.setPlaceholderText("Выберите папку...")
+        
+        # Кнопка с иконкой папки из стандартного стиля системы
+        self.browse_btn = QPushButton()
+        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        self.browse_btn.setIcon(icon)
+        self.browse_btn.setToolTip("Выбрать папку в проводнике")
+        self.browse_btn.clicked.connect(self.browse_folder)
+        
+        path_layout.addWidget(self.path_input)
+        path_layout.addWidget(self.browse_btn)
+        layout.addLayout(path_layout)
+        
+        # --- Секция лимита ---
         limit_layout = QHBoxLayout()
-        limit_layout.addWidget(QLabel("Лимит (МБ):"))
+        limit_layout.addWidget(QLabel("Лимит кеша (МБ):"))
         self.limit_input = QLineEdit()
         limit_layout.addWidget(self.limit_input)
         layout.addLayout(limit_layout)
         
-        # Кнопка сохранения
-        self.save_btn = QPushButton("Сохранить")
+        # --- Кнопка сохранения ---
+        self.save_btn = QPushButton("Сохранить параметры")
+        self.save_btn.setStyleSheet("font-weight: bold; padding: 5px;")
         self.save_btn.clicked.connect(self.save_settings)
         layout.addWidget(self.save_btn)
         
         self.setLayout(layout)
         self.load_settings()
 
+    def browse_folder(self):
+        # Открываем диалог выбора директории
+        directory = QFileDialog.getExistingDirectory(self, "Выберите папку для кеша")
+        if directory:
+            self.path_input.setText(directory)
+
     def load_settings(self):
         if os.path.exists(self.config_file):
             try:
-                with open(self.config_file, "r") as f:
+                with open(self.config_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    self.cache_input.setText(str(data.get("cache_size", "")))
+                    self.path_input.setText(data.get("cache_path", ""))
                     self.limit_input.setText(str(data.get("limit_size", "")))
             except Exception as e:
                 print(f"Ошибка загрузки настроек: {e}")
 
     def save_settings(self):
         data = {
-            "cache_size": self.cache_input.text(),
+            "cache_path": self.path_input.text(),
             "limit_size": self.limit_input.text()
         }
         try:
-            with open(self.config_file, "w") as f:
-                json.dump(data, f)
+            with open(self.config_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
             print(f"[КОНФИГ] Настройки сохранены в {self.config_file}")
-            self.accept() # Закрыть окно
+            self.accept()
         except Exception as e:
             print(f"Ошибка сохранения: {e}")
 
