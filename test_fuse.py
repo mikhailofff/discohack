@@ -48,7 +48,15 @@ def main():
     print(f"Запуск с конфигом из {CONFIG_PATH}")
     print(f"Токен: {token[:5]}***{token[-5:]}")
     model = CloudFUSE(token=token, cache_dir=cache_dir, max_cache_size=limit_bytes)
-    FUSE(model, mountpoint, foreground=True, nothreads=True, nonempty=True)
+    FUSE(
+        model,
+        mountpoint,
+        foreground=True,
+        nothreads=False,
+        max_read=131072,
+        big_writes=True,
+        nonempty=True
+    )
 
 
 if __name__ == '__main__':
