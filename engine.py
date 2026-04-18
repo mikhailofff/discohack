@@ -97,12 +97,10 @@ class CloudFUSE(fuse.Operations):
                 needs_download = True
 
         if needs_download:
-            # 1. Защита: файл больше всего кэша
             if remote_size > self.max_cache_size:
                 logger.error(f"File {path} exceeds max cache size")
                 raise fuse.FuseOSError(errno.EFBIG)
 
-            # 2. Освобождаем место ДО загрузки
             self._make_room(remote_size)
 
             logger.info(f"DOWNLOADING (STREAM): {path}...")
