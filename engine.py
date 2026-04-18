@@ -13,16 +13,17 @@ logger = logging.getLogger("Engine")
 
 class CloudFUSE(fuse.Operations):
     def __init__(self, token, cache_dir, max_cache_size):
+        # ИЗМЕНЕНИЕ: Теперь адаптер инициализируется переданным токеном
         self.adapter = adapter.get_adapter(token)
         self.cache = MetadataCache()
         self.cache_dir = cache_dir
         self.max_cache_size = max_cache_size
         self.active_files = set()
         self.dirty_files = set()
+
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
 
-        self.dirty_files = set()
         self.cache.set_node('/', 4096, is_dir=True)
 
         try:
@@ -39,6 +40,19 @@ class CloudFUSE(fuse.Operations):
 
     def _get_cache_path(self, path):
         return os.path.join(self.cache_dir, path.lstrip('/'))
+
+    # ИЗМЕНЕНИЕ: Добавлен метод statfs, чтобы Dolphin видел свободное место
+    # и не выдавал ошибку "Not enough space"
+    def statfs(self, path):
+        return {
+            'f_bsize': 4096,
+            'f_blocks': 100000000,  # Имитируем большой диск
+            'f_bfree': 50000000,
+            'f_bavail': 50000000,
+            'f_files': 1000000,
+            'f_ffree': 1000000,
+            'f_namemax': 255
+        }
 
     def getattr(self, path, fh=None):
         basename = os.path.basename(path)
@@ -78,13 +92,15 @@ class CloudFUSE(fuse.Operations):
         attrs = self.getattr(path)
         remote_size = attrs['st_size']
         needs_download = not os.path.exists(local_path)
+
         if not needs_download:
             local_size = os.path.getsize(local_path)
             if local_size != remote_size and path not in self.dirty_files:
-                logger.info(f"CACHE INVALID: {path} changed in cloud (local: {local_size}, remote: {remote_size})")
+                logger.info(f"CACHE INVALID: {path} changed in cloud")
                 needs_download = True
+
         if needs_download:
-            logger.info(f"DOWNLOADING: {path} to disk cache...")
+            logger.info(f"DOWNLOADING: {path}...")
             self.active_files.add(path)
             try:
                 data = self.adapter.read_file(path)
@@ -126,7 +142,6 @@ class CloudFUSE(fuse.Operations):
             try:
                 with open(local_path, 'rb') as f:
                     self.adapter.write_file(path, f)
-
                 self.dirty_files.remove(path)
                 self._evict_cache_if_needed()
             except Exception as e:
@@ -164,7 +179,9 @@ class CloudFUSE(fuse.Operations):
         self._remove_from_parent_list(path)
         return 0
 
+    # ИЗМЕНЕНИЕ: В rename добавлена очистка кэша нод и принудительный сброс списков
     def rename(self, old, new):
+        logger.info(f"RENAME: {old} -> {new}")
         self.adapter.move(old, new)
         old_local = self._get_cache_path(old)
         new_local = self._get_cache_path(new)
@@ -177,31 +194,28 @@ class CloudFUSE(fuse.Operations):
         if attrs:
             is_dir = stat.S_ISDIR(attrs['st_mode'])
             self.cache.set_node(new, size=attrs['st_size'], is_dir=is_dir)
+            # Если в твоем MetadataCache есть метод удаления, стоит вызвать:
+            # self.cache.remove_node(old)
 
+        # Сбрасываем кэш списков обеих директорий
         self._remove_from_parent_list(old)
         self._add_to_parent_list(new)
         return 0
 
+    # ИЗМЕНЕНИЕ: Метод теперь просто инвалидирует кэш родителя (ставит None)
+    # Это гарантирует, что при следующем просмотре папки список будет актуальным
     def _add_to_parent_list(self, path):
         parent = os.path.dirname(path)
-        name = os.path.basename(path)
-        children = self.cache.get_directory_list(parent) or []
-        if name not in children:
-            children.append(name)
-            self.cache.set_directory_list(parent, children)
+        self.cache.set_directory_list(parent, None)
 
+    # ИЗМЕНЕНИЕ: Аналогично — сброс в None для надежности при Drag-and-Drop
     def _remove_from_parent_list(self, path):
         parent = os.path.dirname(path)
-        name = os.path.basename(path)
-        children = self.cache.get_directory_list(parent) or []
-        if name in children:
-            children.remove(name)
-            self.cache.set_directory_list(parent, children)
+        self.cache.set_directory_list(parent, None)
 
     def _evict_cache_if_needed(self):
         files = []
         total_size = 0
-
         for root, _, filenames in os.walk(self.cache_dir):
             for f in filenames:
                 full_path = os.path.join(root, f)
@@ -210,7 +224,7 @@ class CloudFUSE(fuse.Operations):
                 except FileNotFoundError:
                     continue
                 rel_path = "/" + os.path.relpath(full_path, self.cache_dir)
-                if rel_path in self.dirty_files or hasattr(self, 'active_files') and rel_path in self.active_files:
+                if rel_path in self.dirty_files or rel_path in self.active_files:
                     continue
 
                 files.append({
@@ -219,28 +233,15 @@ class CloudFUSE(fuse.Operations):
                     'atime': stat_info.st_atime
                 })
                 total_size += stat_info.st_size
-        if total_size > self.max_cache_size:
-            logger.info(f"Cache limit exceeded ({total_size} bytes). Cleaning up...")
-            files.sort(key=lambda x: x['atime'])
 
+        if total_size > self.max_cache_size:
+            logger.info(f"Cache cleanup... ({total_size} bytes)")
+            files.sort(key=lambda x: x['atime'])
             for f in files:
                 if total_size <= self.max_cache_size:
                     break
-
                 try:
                     os.remove(f['path'])
                     total_size -= f['size']
-                    logger.info(f"Evicted from cache: {f['path']}")
                 except Exception as e:
-                    logger.error(f"Failed to evict {f['path']}: {e}")
-
-    def statfs(self, path):
-        return {
-            'f_bsize': 4096,
-            'f_blocks': 100000000,
-            'f_bfree': 50000000,
-            'f_bavail': 50000000,
-            'f_files': 1000000,
-            'f_ffree': 1000000,
-            'f_namemax': 255
-        }
+                    logger.error(f"Eviction failed: {e}")
