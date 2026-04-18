@@ -17,14 +17,19 @@ class CloudFUSE(fuse.Operations):
         self.cache = MetadataCache()
         self.cache_dir = cache_dir
         self.max_cache_size = max_cache_size
+
+        # Файлы, которые сейчас качаются или выгружаются (нельзя удалять из кэша)
         self.active_files = set()
+        # Файлы, измененные локально, но еще не ушедшие в облако
         self.dirty_files = set()
-        self.current_cache_size = self._calculate_initial_cache_size()
+
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
 
+        self.current_cache_size = self._calculate_initial_cache_size()
         self.cache.set_node('/', 4096, is_dir=True)
 
+        # Первичный листинг корня
         try:
             files = self.adapter.listdir('/')
             file_names = []
@@ -52,6 +57,7 @@ class CloudFUSE(fuse.Operations):
         }
 
     def getattr(self, path, fh=None):
+        # Игнорируем мусорные файлы систем
         basename = os.path.basename(path)
         if basename in ['.directory', '.hidden', '.Trash', '.Trash-1000', 'autorun.inf']:
             raise fuse.FuseOSError(errno.ENOENT)
@@ -88,8 +94,10 @@ class CloudFUSE(fuse.Operations):
         local_path = self._get_cache_path(path)
         attrs = self.getattr(path)
         remote_size = attrs['st_size']
+
         needs_download = not os.path.exists(local_path)
 
+        # Проверка актуальности кэша
         if not needs_download:
             local_size = os.path.getsize(local_path)
             if local_size != remote_size and path not in self.dirty_files:
@@ -97,16 +105,22 @@ class CloudFUSE(fuse.Operations):
                 needs_download = True
 
         if needs_download:
-            logger.info(f"DOWNLOADING: {path}...")
+            logger.info(f"DOWNLOADING (STREAM): {path}...")
             self.active_files.add(path)
             try:
-                data = self.adapter.read_file(path)
                 os.makedirs(os.path.dirname(local_path), exist_ok=True)
-                with open(local_path, 'wb') as f:
-                    f.write(data)
+                # Используем новый метод адаптера для потокового скачивания
+                self.adapter.download_file(path, local_path)
+
+                downloaded_size = os.path.getsize(local_path)
+                self.current_cache_size += downloaded_size
                 self._evict_cache_if_needed()
+            except Exception as e:
+                logger.error(f"Download failed: {e}")
+                if os.path.exists(local_path): os.remove(local_path)
+                raise fuse.FuseOSError(errno.EIO)
             finally:
-                self.active_files.remove(path)
+                self.active_files.discard(path)
 
         with open(local_path, 'rb') as f:
             f.seek(offset)
@@ -115,20 +129,24 @@ class CloudFUSE(fuse.Operations):
     def write(self, path, data, offset, fh):
         local_path = self._get_cache_path(path)
         self.dirty_files.add(path)
+
         old_local_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
+
+        # Если файла нет в кэше, его нужно скачать перед тем как в него писать
         if not os.path.exists(local_path):
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
             attrs = self.cache.get_attrs(path)
-            if attrs and attrs['st_size'] == 0:
-                base_content = b""
-            else:
+            if attrs and attrs['st_size'] > 0:
                 try:
-                    base_content = self.adapter.read_file(path)
+                    self.adapter.download_file(path, local_path)
+                    old_local_size = os.path.getsize(local_path)
                 except:
-                    base_content = b""
-            with open(local_path, 'wb') as f:
-                f.write(base_content)
-            old_local_size = len(base_content)
+                    with open(local_path, 'wb') as f:
+                        pass
+            else:
+                with open(local_path, 'wb') as f:
+                    pass
+
         with open(local_path, 'r+b') as f:
             f.seek(offset)
             f.write(data)
@@ -139,20 +157,8 @@ class CloudFUSE(fuse.Operations):
         self._evict_cache_if_needed()
         return len(data)
 
-    def utimens(self, path, times=None):
-        attrs = self.cache.get_attrs(path)
-        if attrs:
-            self.cache.set_node(path, size=attrs['st_size'], is_dir=stat.S_ISDIR(attrs['st_mode']))
-        return 0
-
-    def mkdir(self, path, mode):
-        logger.info(f"MKDIR: {path}")
-        self.adapter.mkdir(path)
-        self.cache.set_node(path, size=4096, is_dir=True)
-        self._add_to_parent_list(path)
-        return 0
-
     def release(self, path, fh):
+        # Синхронизация с облаком происходит при закрытии файла, если он был изменен
         if path in self.dirty_files:
             local_path = self._get_cache_path(path)
             logger.info(f"RELEASE: Syncing {path} to cloud...")
@@ -161,7 +167,6 @@ class CloudFUSE(fuse.Operations):
                 with open(local_path, 'rb') as f:
                     self.adapter.write_file(path, f)
                 self.dirty_files.remove(path)
-                self._evict_cache_if_needed()
             except Exception as e:
                 logger.error(f"Failed to sync {path}: {e}")
             finally:
@@ -183,9 +188,14 @@ class CloudFUSE(fuse.Operations):
     def truncate(self, path, length, fh=None):
         local_path = self._get_cache_path(path)
         old_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
-        if os.path.exists(local_path):
-            with open(local_path, 'r+b') as f:
-                f.truncate(length)
+
+        if not os.path.exists(local_path):
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            with open(local_path, 'wb') as f: pass
+
+        with open(local_path, 'r+b') as f:
+            f.truncate(length)
+
         self.current_cache_size += (length - old_size)
         self.cache.set_node(path, size=length, is_dir=False)
         self.dirty_files.add(path)
@@ -200,24 +210,26 @@ class CloudFUSE(fuse.Operations):
             file_size = os.path.getsize(local_path)
             os.remove(local_path)
             self.current_cache_size -= file_size
-            logger.info(f"Cache size updated: -{file_size} bytes")
+
         if hasattr(self.cache, 'remove_node'):
             self.cache.remove_node(path)
         self._remove_from_parent_list(path)
         return 0
 
-    def rmdir(self, path):
-        logger.info(f"RMDIR: {path}")
-        self.adapter.delete(path)
+    def mkdir(self, path, mode):
+        self.adapter.mkdir(path)
+        self.cache.set_node(path, size=4096, is_dir=True)
+        self._add_to_parent_list(path)
+        return 0
 
+    def rmdir(self, path):
+        self.adapter.delete(path)
         if hasattr(self.cache, 'remove_node'):
             self.cache.remove_node(path)
-
         self._remove_from_parent_list(path)
         return 0
 
     def rename(self, old, new):
-        logger.info(f"RENAME: {old} -> {new}")
         self.adapter.move(old, new)
         old_local = self._get_cache_path(old)
         new_local = self._get_cache_path(new)
@@ -228,14 +240,17 @@ class CloudFUSE(fuse.Operations):
 
         attrs = self.cache.get_attrs(old)
         if attrs:
-            is_dir = stat.S_ISDIR(attrs['st_mode'])
-            self.cache.set_node(new, size=attrs['st_size'], is_dir=is_dir)
+            self.cache.set_node(new, size=attrs['st_size'], is_dir=stat.S_ISDIR(attrs['st_mode']))
+
         if hasattr(self.cache, 'remove_node'):
             self.cache.remove_node(old)
-
         self._remove_from_parent_list(old)
         self._add_to_parent_list(new)
         return 0
+
+    def utimens(self, path, times=None):
+        return 0
+
     def _add_to_parent_list(self, path):
         parent = os.path.dirname(path)
         self.cache.set_directory_list(parent, None)
@@ -247,12 +262,13 @@ class CloudFUSE(fuse.Operations):
     def _evict_cache_if_needed(self):
         if self.current_cache_size <= self.max_cache_size:
             return
-        logger.info(f"Cache cleanup triggered. Current: {self.current_cache_size}, Limit: {self.max_cache_size}")
+
         files = []
         for root, _, filenames in os.walk(self.cache_dir):
             for f in filenames:
                 full_path = os.path.join(root, f)
                 rel_path = "/" + os.path.relpath(full_path, self.cache_dir).replace('\\', '/')
+
                 if rel_path in self.dirty_files or rel_path in self.active_files:
                     continue
                 try:
@@ -262,8 +278,9 @@ class CloudFUSE(fuse.Operations):
                         'size': stat_info.st_size,
                         'atime': stat_info.st_atime
                     })
-                except FileNotFoundError:
+                except:
                     continue
+
         files.sort(key=lambda x: x['atime'])
         for f in files:
             if self.current_cache_size <= self.max_cache_size:
@@ -271,9 +288,10 @@ class CloudFUSE(fuse.Operations):
             try:
                 os.remove(f['path'])
                 self.current_cache_size -= f['size']
-                logger.info(f"Evicted: {f['path']} (freed {f['size']} bytes)")
-            except Exception as e:
-                logger.error(f"Failed to evict {f['path']}: {e}")
+                logger.info(f"Evicted from cache: {f['path']}")
+            except:
+                pass
+
     def _calculate_initial_cache_size(self):
         total = 0
         for root, _, filenames in os.walk(self.cache_dir):
