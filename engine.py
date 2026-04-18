@@ -37,6 +37,21 @@ class CloudFUSE(fuse.Operations):
         except Exception as e:
             logger.error(f"Initial listdir failed: {e}")
 
+    def _initial_fetch(self):
+        try:
+            files = self.adapter.listdir('/')
+            file_names = [f['name'] for f in files]
+            for f in files:
+                path = f'/{f["name"]}'
+                self.cache.set_node(path, size=f['size'], is_dir=f.get('is_dir', False))
+            self.cache.set_directory_list('/', file_names)
+        except Exception as e:
+            logger.error(f"Initial listdir failed: {e}")
+
+    def _is_ignored(self, path):
+        basename = os.path.basename(path)
+        return any(basename.endswith(p) or basename.startswith(p) for p in IGNORED_PATTERNS)
+
     def _get_cache_path(self, path):
         return os.path.join(self.cache_dir, path.lstrip('/'))
 
@@ -57,15 +72,15 @@ class CloudFUSE(fuse.Operations):
             raise fuse.FuseOSError(errno.ENOENT)
 
         attrs = self.cache.get_attrs(path)
-        if attrs:
-            return attrs
+        if not attrs or path != '/':
+            try:
+                metadata = self.adapter.get_metadata(path)
+                self.cache.set_node(path, size=metadata['size'], is_dir=metadata.get('is_dir', False))
+                attrs = self.cache.get_attrs(path)
+            except:
+                if not attrs: raise fuse.FuseOSError(errno.ENOENT)
 
-        try:
-            metadata = self.adapter.get_metadata(path)
-            self.cache.set_node(path, size=metadata['size'], is_dir=metadata.get('is_dir', False))
-            return self.cache.get_attrs(path)
-        except:
-            raise fuse.FuseOSError(errno.ENOENT)
+        return attrs
 
     def readdir(self, path, fh):
         dirents = ['.', '..']
@@ -86,37 +101,44 @@ class CloudFUSE(fuse.Operations):
 
     def read(self, path, size, offset, fh):
         local_path = self._get_cache_path(path)
-        attrs = self.getattr(path)
-        remote_size = attrs['st_size']
-        if remote_size > self.max_cache_size:
-            logger.error(f"File {path} is too large for cache ({remote_size} > {self.max_cache_size})")
-            raise fuse.FuseOSError(errno.EFBIG)
 
-        needs_download = not os.path.exists(local_path)
-        if not needs_download:
-            local_size = os.path.getsize(local_path)
-            if local_size != remote_size and path not in self.dirty_files:
-                logger.info(f"CACHE INVALID: {path} changed in cloud")
-                needs_download = True
-        if needs_download:
+        if not os.path.exists(local_path):
             logger.info(f"DOWNLOADING (STREAM): {path}...")
             self.active_files.add(path)
             try:
                 os.makedirs(os.path.dirname(local_path), exist_ok=True)
-                self.adapter.download_file(path, local_path)
-                downloaded_size = os.path.getsize(local_path)
-                self.current_cache_size += downloaded_size
+                self.adapter.download_file(path, local_path)  # Используем твой потоковый загрузчик
+                self.current_cache_size += os.path.getsize(local_path)
                 self._evict_cache_if_needed()
             except Exception as e:
                 logger.error(f"Download failed: {e}")
-                if os.path.exists(local_path):
-                    os.remove(local_path)
                 raise fuse.FuseOSError(errno.EIO)
             finally:
                 self.active_files.remove(path)
+
         with open(local_path, 'rb') as f:
             f.seek(offset)
             return f.read(size)
+
+    def open(self, path, fi):
+        if self._is_ignored(path):
+            return 0
+
+        local_path = self._get_cache_path(path)
+        try:
+            metadata = self.adapter.get_metadata(path)
+            remote_size = metadata['size']
+
+            if os.path.exists(local_path):
+                local_size = os.path.getsize(local_path)
+                if local_size != remote_size and path not in self.dirty_files:
+                    logger.info(f"CACHE STALE: {path} changed in cloud. Evicting local copy.")
+                    os.remove(local_path)
+                    self.current_cache_size -= local_size
+        except Exception as e:
+            logger.error(f"Error during open validation: {e}")
+
+        return 0
 
     def write(self, path, data, offset, fh):
         local_path = self._get_cache_path(path)
@@ -159,7 +181,7 @@ class CloudFUSE(fuse.Operations):
         return 0
 
     def release(self, path, fh):
-        if path in self.dirty_files:
+        if path in self.dirty_files and not self._is_ignored(path):
             local_path = self._get_cache_path(path)
             logger.info(f"RELEASE: Syncing {path} to cloud...")
             self.active_files.add(path)
@@ -167,7 +189,6 @@ class CloudFUSE(fuse.Operations):
                 with open(local_path, 'rb') as f:
                     self.adapter.write_file(path, f)
                 self.dirty_files.remove(path)
-                self._evict_cache_if_needed()
             except Exception as e:
                 logger.error(f"Failed to sync {path}: {e}")
             finally:
@@ -200,13 +221,14 @@ class CloudFUSE(fuse.Operations):
 
     def unlink(self, path):
         logger.info(f"UNLINK: {path}")
-        self.adapter.delete(path)
+        if not self._is_ignored(path):
+            self.adapter.delete(path)
+
         local_path = self._get_cache_path(path)
         if os.path.exists(local_path):
-            file_size = os.path.getsize(local_path)
+            self.current_cache_size -= os.path.getsize(local_path)
             os.remove(local_path)
-            self.current_cache_size -= file_size
-            logger.info(f"Cache size updated: -{file_size} bytes")
+
         if hasattr(self.cache, 'remove_node'):
             self.cache.remove_node(path)
         self._remove_from_parent_list(path)
@@ -243,6 +265,10 @@ class CloudFUSE(fuse.Operations):
         self._add_to_parent_list(new)
         return 0
     def _add_to_parent_list(self, path):
+        parent = os.path.dirname(path)
+        self.cache.set_directory_list(parent, None)
+
+    def _remove_from_parent_list(self, path):
         parent = os.path.dirname(path)
         self.cache.set_directory_list(parent, None)
 

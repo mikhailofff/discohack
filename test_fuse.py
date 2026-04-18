@@ -55,6 +55,7 @@ def main():
         nothreads=False,
         max_read=131072,
         auto_cache=True,
+        attr_timeout=0,
         big_writes=True,
         nonempty=True
     )
