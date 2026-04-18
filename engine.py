@@ -287,3 +287,16 @@ class CloudFUSE(fuse.Operations):
             for f in filenames:
                 total += os.path.getsize(os.path.join(root, f))
         return total
+
+    def open(self, path, fi):
+        local_path = self._get_cache_path(path)
+
+        metadata = self.adapter.get_metadata(path)
+        remote_size = metadata['size']
+        # remote_hash = metadata.get('sha256') # Если адаптер его тянет
+        if os.path.exists(local_path):
+            local_size = os.path.getsize(local_path)
+            if local_size != remote_size:
+                logger.info(f"Cache stale for {path}, redownloading...")
+                os.remove(local_path)
+        return 0

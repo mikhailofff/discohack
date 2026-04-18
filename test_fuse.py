@@ -54,6 +54,7 @@ def main():
         foreground=True,
         nothreads=False,
         max_read=131072,
+        auto_cache=True,
         big_writes=True,
         nonempty=True
     )
