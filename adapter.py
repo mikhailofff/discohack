@@ -28,7 +28,7 @@ class YandexAdapter:
     def listdir(self, path: str) -> list[dict]:
         logger.info("Fetching directory listing for %s", path)
 
-        response = requests.get(
+        response = self.session.get(
             self.resource_url,
             headers=self.headers,
             params={
@@ -47,7 +47,7 @@ class YandexAdapter:
     def get_metadata(self, path: str) -> dict:
         logger.info("Fetching metadata for %s", path)
 
-        response = requests.get(
+        response = self.session.get(
             self.resource_url,
             headers=self.headers,
             params={"path": self._disk_path(path)},
@@ -59,7 +59,7 @@ class YandexAdapter:
 
     def download_file(self, path: str, local_path: str) -> None:
         logger.info("Streaming download for %s to %s", path, local_path)
-        response = requests.get(
+        response = self.session.get(
             self.download_url,
             headers=self.headers,
             params={"path": self._disk_path(path)},
@@ -73,7 +73,6 @@ class YandexAdapter:
                 for chunk in r.iter_content(chunk_size=1024 * 1024):  # по 1 МБ
                     if chunk:
                         f.write(chunk)
-                        f.flush()
 
     def create_file(self, path: str) -> None:
         logger.info("Creating empty file %s", path)
@@ -83,7 +82,7 @@ class YandexAdapter:
     def write_file(self, path: str, data) -> None:
         logger.info("Uploading file %s", path)
 
-        response = requests.get(
+        response = self.session.get(
             self.upload_url,
             headers=self.headers,
             params={
@@ -105,7 +104,7 @@ class YandexAdapter:
     def mkdir(self, path: str) -> None:
         logger.info("Creating directory %s", path)
 
-        response = requests.put(
+        response = self.session.put(
             self.resource_url,
             headers=self.headers,
             params={"path": self._disk_path(path)},
@@ -116,7 +115,7 @@ class YandexAdapter:
     def delete(self, path: str) -> None:
         logger.info("Deleting resource %s", path)
 
-        response = requests.delete(
+        response = self.session.delete(
             self.resource_url,
             headers=self.headers,
             params={
@@ -130,7 +129,7 @@ class YandexAdapter:
     def move(self, old_path: str, new_path: str) -> None:
         logger.info("Moving resource from %s to %s", old_path, new_path)
 
-        response = requests.post(
+        response = self.session.post(
             self.move_url,
             headers=self.headers,
             params={
@@ -145,7 +144,7 @@ class YandexAdapter:
     def get_disk_info(self) -> dict:
         logger.info("Fetching disk info")
 
-        response = requests.get(
+        response = self.session.get(
             self.base_url,
             headers=self.headers,
             timeout=self.default_timeout,
